@@ -3261,18 +3261,14 @@ get_dfs_path(const unsigned int xid, struct cifs_ses *ses, const char *old_path,
 	     const struct nls_table *nls_codepage, unsigned int *num_referrals,
 	     struct dfs_info3_param **referrals, int remap)
 {
-	int rc = 0;
-
 	if (!ses->server->ops->get_dfs_refer)
 		return -ENOSYS;
 
 	*num_referrals = 0;
 	*referrals = NULL;
 
-	rc = ses->server->ops->get_dfs_refer(xid, ses, old_path,
-					     referrals, num_referrals,
-					     nls_codepage, remap);
-	return rc;
+	return dfs_cache_find(xid, ses, old_path, nls_codepage, remap,
+			      referrals, num_referrals);
 }
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
