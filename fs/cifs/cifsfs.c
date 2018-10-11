@@ -1493,6 +1493,7 @@ init_cifs(void)
 	rc = init_cifs_spnego();
 	if (rc)
 		goto out_destroy_request_bufs;
+	dfs_cache_init();
 #endif /* CONFIG_CIFS_UPCALL */
 
 #ifdef CONFIG_CIFS_ACL
@@ -1550,6 +1551,7 @@ exit_cifs(void)
 #endif
 #ifdef CONFIG_CIFS_UPCALL
 	exit_cifs_spnego();
+	dfs_cache_destroy();
 #endif
 	cifs_destroy_request_bufs();
 	cifs_destroy_mids();

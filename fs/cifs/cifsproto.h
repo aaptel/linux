@@ -562,4 +562,10 @@ void cifs_free_hash(struct crypto_shash **shash, struct sdesc **sdesc);
 extern void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
 				unsigned int *len, unsigned int *offset);
 
+void dfs_cache_init(void);
+void dfs_cache_destroy(void);
+int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
+		   const char *path, const struct nls_table *nls_codepage,
+		   int remap, struct dfs_info3_param **refs, int *numrefs);
+
 #endif			/* _CIFSPROTO_H */
