@@ -310,13 +310,12 @@ static void dump_referral(const struct dfs_info3_param *ref)
  */
 static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 {
-	struct dfs_info3_param *referrals = NULL;
-	unsigned int num_referrals = 0;
+	struct dfs_info3_param referral = {0};
 	struct cifs_sb_info *cifs_sb;
 	struct cifs_ses *ses;
 	char *full_path;
 	unsigned int xid;
-	int i;
+	int len;
 	int rc;
 	struct vfsmount *mnt;
 	struct tcon_link *tlink;
@@ -352,30 +351,33 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 
 	xid = get_xid();
 	rc = get_dfs_path(xid, ses, full_path + 1, cifs_sb->local_nls,
-		&num_referrals, &referrals,
-		cifs_remap(cifs_sb));
+			  &referral, cifs_remap(cifs_sb));
 	free_xid(xid);
 
 	cifs_put_tlink(tlink);
 
-	mnt = ERR_PTR(-ENOENT);
-	for (i = 0; i < num_referrals; i++) {
-		int len;
-		dump_referral(referrals + i);
+	while (!rc) {
+		dump_referral(&referral);
+
 		/* connect to a node */
-		len = strlen(referrals[i].node_name);
+		len = strlen(referral.node_name);
 		if (len < 2) {
 			cifs_dbg(VFS, "%s: Net Address path too short: %s\n",
-				 __func__, referrals[i].node_name);
-			mnt = ERR_PTR(-EINVAL);
+				 __func__, referral.node_name);
+			rc = -EINVAL;
 			break;
 		}
-		mnt = cifs_dfs_do_refmount(mntpt, cifs_sb,
-				full_path, referrals + i);
+
+		mnt = cifs_dfs_do_refmount(mntpt, cifs_sb, full_path,
+					   &referral);
 		cifs_dbg(FYI, "%s: cifs_dfs_do_refmount:%s , mnt:%p\n",
-			 __func__, referrals[i].node_name, mnt);
+			 __func__, referral.node_name, mnt);
 		if (!IS_ERR(mnt))
-			goto success;
+			break;
+
+		rc = dfs_cache_invalidate_tgt(referral.node_name);
+
+		free_dfs_info_param(&referral);
 	}
 
 	/* no valid submounts were found; return error from get_dfs_path() by
@@ -383,8 +385,6 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	if (rc != 0)
 		mnt = ERR_PTR(rc);
 
-success:
-	free_dfs_info_array(referrals, num_referrals);
 free_full_path:
 	kfree(full_path);
 cdda_exit:
@@ -506,6 +506,8 @@ static inline int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
 
 	free_tgts(ce);
 
+	ce->tgthint = 0;
+
 	for (i = 0; i < numrefs; i++) {
 		const struct dfs_info3_param *ref = &refs[i];
 
@@ -566,42 +568,29 @@ out:
 	return rc;
 }
 
-static int alloc_refs(const char *path, const struct dfs_cache_entry *ce,
-		      struct dfs_info3_param **refs, int *numrefs)
+static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
+		     struct dfs_info3_param *ref)
 {
-	struct dfs_info3_param *ref;
-	int i;
+	char *tgt;
 
-	*numrefs = 0;
+	memset(ref, 0, sizeof(*ref));
 
-	*refs = kzalloc(ce->numtgts * sizeof(**refs), GFP_KERNEL);
-	if (!*refs)
+	ref->path_name = kstrndup(path, strlen(path), GFP_KERNEL);
+	if (!ref->path_name)
 		return -ENOMEM;
 
-	*numrefs = ce->numtgts;
+	ref->path_consumed = strlen(path);
 
-	ref = *refs;
+	tgt = ce->tgts[ce->tgthint];
 
-	for (i = 0; i < ce->numtgts; i++) {
-		/*
-		 * Caller is responsible for freeing these fields up later in
-		 * free_dfs_info_array().
-		 */
-		ref->path_name = kstrndup(path, strlen(path), GFP_KERNEL);
-		if (!ref->path_name)
-			return -ENOMEM;
-		ref->node_name = kstrndup(ce->tgts[i], strlen(ce->tgts[i]),
-					  GFP_KERNEL);
-		if (!ref->node_name)
-			return -ENOMEM;
+	ref->node_name = kstrndup(tgt, strlen(tgt), GFP_KERNEL);
+	if (!ref->node_name)
+		return -ENOMEM;
 
-		ref->ttl = ce->ttl;
-		ref->server_type = ce->srv_type;
-		ref->ref_flag = ce->flags;
-		ref->path_consumed = strlen(path);
+	ref->ttl = ce->ttl;
+	ref->server_type = ce->srv_type;
+	ref->ref_flag = ce->flags;
 
-		ref++;
-	}
 	return 0;
 }
 
@@ -687,7 +676,7 @@ static inline bool is_sysvol_or_netlogon(const char *path)
 
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		   const char *path, const struct nls_table *nls_codepage,
-		   int remap, struct dfs_info3_param **refs, int *numrefs)
+		   int remap, struct dfs_info3_param *ref)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -696,10 +685,10 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	struct dfs_info3_param *nrefs;
 	int numnrefs;
 
-	if (!ses || !path || !nls_codepage || !refs || !numrefs)
+	if (!ses || !path || !nls_codepage || !ref)
 		return -EINVAL;
 	if (unlikely(!dfs_cache_initialized))
-		return -ENOENT;
+		return -EINVAL;
 	if (unlikely(!ses->server->ops->get_dfs_refer))
 		return -ENOSYS;
 	if (unlikely(!strchr(path + 1, '\\')))
@@ -736,7 +725,7 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 
 		interlink = IS_INTERLINK_SET(ce->flags);
 
-		cifs_dbg(FYI, "%s: cache entry: prepath=%s,ttl=%d,etime=%ld"
+		cifs_dbg(FYI, "%s: cache entry: prepath=%s,ttl=%d,etime=%ld,"
 			 "interlink=%s\n", __func__, ce->prepath, ce->ttl,
 			 ce->etime.tv_nsec, interlink ? "yes" : "no");
 
@@ -761,11 +750,62 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		path = ce->tgts[ce->tgthint];
 	}
 
-	rc = alloc_refs(path, ce, refs, numrefs);
+	rc = setup_ref(path, ce, ref);
 
 out:
 	mutex_unlock(&dfs_cache.lock);
 	cifs_dbg(FYI, "%s: rc = %d\n", __func__, rc);
+	return rc;
+}
+
+int dfs_cache_invalidate_tgt(const char *tgt)
+{
+	int rc;
+	struct dfs_cache_entry *ce;
+	char *s;
+
+	if (!tgt)
+		return -EINVAL;
+
+	cifs_dbg(FYI, "%s: target: %s\n", __func__, tgt);
+
+	if (unlikely(!dfs_cache_initialized))
+		return -EINVAL;
+
+	mutex_lock(&dfs_cache.lock);
+
+	if (unlikely(!dfs_cache.numents)) {
+		rc = -ENOENT;
+		goto out;
+	}
+
+	ce = &dfs_cache.ents[dfs_cache.numents - 1];
+	if (unlikely(!ce->numtgts)) {
+		rc = -EINVAL;
+		goto out;
+	}
+	if (ce->tgthint + 1 >= ce->numtgts) {
+		rc = -ENOENT;
+		goto out;
+	}
+
+	cifs_dbg(FYI, "%s: cache entry: prepath=%s,ttl=%d,etime=%ld,"
+		 "interlink=%s\n", __func__, ce->prepath, ce->ttl,
+		 ce->etime.tv_nsec, IS_INTERLINK_SET(ce->flags) ? "yes" : "no");
+
+	s = ce->tgts[ce->tgthint];
+	cifs_dbg(FYI, "%s: current tgt hint: %s\n", __func__, s);
+	if (strcasecmp(tgt, s)) {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	s = ce->tgts[++ce->tgthint];
+	cifs_dbg(FYI, "%s: new tgt hint: %s\n", __func__, s);
+	rc = 0;
+
+out:
+	mutex_unlock(&dfs_cache.lock);
 	return rc;
 }
 
