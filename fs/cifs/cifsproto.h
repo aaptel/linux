@@ -297,8 +297,7 @@ extern int CIFSGetDFSRefer(const unsigned int xid, struct cifs_ses *ses,
 extern int get_dfs_path(const unsigned int xid, struct cifs_ses *ses,
 			const char *old_path,
 			const struct nls_table *nls_codepage,
-			unsigned int *num_referrals,
-			struct dfs_info3_param **referrals, int remap);
+			struct dfs_info3_param *referral, int remap);
 extern int parse_dfs_referrals(struct get_dfs_referral_rsp *rsp, u32 rsp_size,
 			       unsigned int *num_of_nodes,
 			       struct dfs_info3_param **target_nodes,
@@ -566,6 +565,7 @@ void dfs_cache_init(void);
 void dfs_cache_destroy(void);
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		   const char *path, const struct nls_table *nls_codepage,
-		   int remap, struct dfs_info3_param **refs, int *numrefs);
+		   int remap, struct dfs_info3_param *refs);
+int dfs_cache_invalidate_tgt(const char *unc);
 
 #endif			/* _CIFSPROTO_H */
