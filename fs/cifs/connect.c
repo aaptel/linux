@@ -3258,17 +3258,14 @@ out:
 
 int
 get_dfs_path(const unsigned int xid, struct cifs_ses *ses, const char *old_path,
-	     const struct nls_table *nls_codepage, unsigned int *num_referrals,
-	     struct dfs_info3_param **referrals, int remap)
+	     const struct nls_table *nls_codepage,
+	     struct dfs_info3_param *referral, int remap)
 {
 	if (!ses->server->ops->get_dfs_refer)
 		return -ENOSYS;
 
-	*num_referrals = 0;
-	*referrals = NULL;
-
 	return dfs_cache_find(xid, ses, old_path, nls_codepage, remap,
-			      referrals, num_referrals);
+			      referral);
 }
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
@@ -3811,8 +3808,7 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		    int check_prefix)
 {
 	int rc;
-	unsigned int num_referrals = 0;
-	struct dfs_info3_param *referrals = NULL;
+	struct dfs_info3_param referral = {0};
 	char *full_path = NULL, *ref_path = NULL, *mdata = NULL;
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
@@ -3825,17 +3821,16 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	/* For DFS paths, skip the first '\' of the UNC */
 	ref_path = check_prefix ? full_path + 1 : volume_info->UNC + 1;
 
-	rc = get_dfs_path(xid, ses, ref_path, cifs_sb->local_nls,
-			  &num_referrals, &referrals, cifs_remap(cifs_sb));
-
-	if (!rc && num_referrals > 0) {
+	rc = get_dfs_path(xid, ses, ref_path, cifs_sb->local_nls, &referral,
+			  cifs_remap(cifs_sb));
+	if (!rc) {
 		char *fake_devname = NULL;
 
 		mdata = cifs_compose_mount_options(cifs_sb->mountdata,
-						   full_path + 1, referrals,
+						   full_path + 1, &referral,
 						   &fake_devname);
 
-		free_dfs_info_array(referrals, num_referrals);
+		free_dfs_info_param(&referral);
 
 		if (IS_ERR(mdata)) {
 			rc = PTR_ERR(mdata);
@@ -4020,6 +4015,7 @@ try_mount_again:
 		tcon = NULL;
 		if (rc == -EACCES)
 			goto mount_fail_check;
+		cifs_dbg(FYI, "%s: cifs_get_tcon: rc = %d\n", __func__, rc);
 
 		goto remote_path_check;
 	}
@@ -4065,6 +4061,11 @@ remote_path_check:
 			referral_walks_count++;
 			goto try_mount_again;
 		}
+	} else if (rc && rc != -EREMOTE) {
+		rc = dfs_cache_invalidate_tgt(volume_info->UNC + 1);
+		if (!rc)
+			goto try_mount_again;
+		goto mount_fail_check;
 	}
 #endif
 
