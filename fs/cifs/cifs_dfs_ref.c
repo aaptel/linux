@@ -323,12 +323,6 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	cifs_dbg(FYI, "in %s\n", __func__);
 	BUG_ON(IS_ROOT(mntpt));
 
-	/*
-	 * The MSDFS spec states that paths in DFS referral requests and
-	 * responses must be prefixed by a single '\' character instead of
-	 * the double backslashes usually used in the UNC. This function
-	 * gives us the latter, so we must adjust the result.
-	 */
 	mnt = ERR_PTR(-ENOMEM);
 
 	cifs_sb = CIFS_SB(mntpt->d_sb);
@@ -350,6 +344,12 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	ses = tlink_tcon(tlink)->ses;
 
 	xid = get_xid();
+	/*
+	 * The MSDFS spec states that paths in DFS referral requests and
+	 * responses must be prefixed by a single '\' character instead of
+	 * the double backslashes usually used in the UNC. This function
+	 * gives us the latter, so we must adjust the result.
+	 */
 	rc = get_dfs_path(xid, ses, full_path + 1, cifs_sb->local_nls,
 			  &referral, cifs_remap(cifs_sb));
 	free_xid(xid);
