@@ -375,7 +375,11 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 		if (!IS_ERR(mnt))
 			break;
 
-		rc = dfs_cache_invalidate_tgt(referral.node_name);
+		rc = dfs_cache_invalidate_tgt(xid, ses,
+					      tlink_tcon(tlink)->treeName,
+					      cifs_sb->local_nls,
+					      cifs_remap(cifs_sb),
+					      referral.node_name);
 
 		free_dfs_info_param(&referral);
 	}
@@ -674,18 +678,19 @@ static inline bool is_sysvol_or_netlogon(const char *path)
 		!strncasecmp(s, "netlogon", strlen("netlogon"));
 }
 
-int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-		   const char *path, const struct nls_table *nls_codepage,
-		   int remap, struct dfs_info3_param *ref)
+static int _dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
+			   const char *path,
+			   const struct nls_table *nls_codepage,
+			   int remap, struct dfs_cache_entry **out_ce)
 {
 	int rc;
-	struct dfs_cache_entry *ce;
 	struct timespec64 ts;
 	bool interlink;
+	struct dfs_cache_entry *ce;
 	struct dfs_info3_param *nrefs;
 	int numnrefs;
 
-	if (!ses || !path || !nls_codepage || !ref)
+	if (!ses || !path || !nls_codepage)
 		return -EINVAL;
 	if (unlikely(!dfs_cache_initialized))
 		return -EINVAL;
@@ -694,7 +699,6 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	if (unlikely(!strchr(path + 1, '\\')))
 		return -EINVAL;
 
-	mutex_lock(&dfs_cache.lock);
 #ifdef CONFIG_CIFS_DEBUG2
 	dump_dfs_cache();
 #endif
@@ -750,19 +754,43 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		path = ce->tgts[ce->tgthint];
 	}
 
-	rc = setup_ref(path, ce, ref);
+	*out_ce = ce;
 
 out:
-	mutex_unlock(&dfs_cache.lock);
 	cifs_dbg(FYI, "%s: rc = %d\n", __func__, rc);
 	return rc;
 }
 
-int dfs_cache_invalidate_tgt(const char *tgt)
+int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
+			   const char *path,
+			   const struct nls_table *nls_codepage,
+			   int remap, struct dfs_info3_param *ref)
 {
 	int rc;
+	struct dfs_cache_entry *ce = NULL;
+
+	mutex_unlock(&dfs_cache.lock);
+	rc = _dfs_cache_find(xid, ses, path, nls_codepage, remap, &ce);
+	if (rc == 0)
+		rc = setup_ref(path, ce, ref);
+	mutex_lock(&dfs_cache.lock);
+
+	return rc;
+}
+
+
+int dfs_cache_invalidate_tgt(unsigned int xid, struct cifs_ses *ses,
+			     const char *tree,
+			     const struct nls_table *nls_codepage,
+			     int remap,
+			     const char *tgt)
+{
+
 	struct dfs_cache_entry *ce;
+	int rc;
+	int i;
 	char *s;
+
 
 	if (!tgt)
 		return -EINVAL;
@@ -773,17 +801,17 @@ int dfs_cache_invalidate_tgt(const char *tgt)
 		return -EINVAL;
 
 	mutex_lock(&dfs_cache.lock);
-
-	if (unlikely(!dfs_cache.numents)) {
-		rc = -ENOENT;
+	rc = _dfs_cache_find(xid, ses, tree, nls_codepage, remap, &ce);
+	if (rc)
 		goto out;
-	}
 
-	ce = &dfs_cache.ents[dfs_cache.numents - 1];
-	if (unlikely(!ce->numtgts)) {
-		rc = -EINVAL;
-		goto out;
+	for (i = 0; i < ce->numtgts; i++) {
+		if (strcasecmp(ce->tgts[i], tgt) == 0)
+			goto found;
 	}
+	rc = -ENOENT;
+	goto out;
+found:
 	if (ce->tgthint + 1 >= ce->numtgts) {
 		rc = -ENOENT;
 		goto out;
