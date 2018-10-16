@@ -4062,7 +4062,7 @@ remote_path_check:
 			goto try_mount_again;
 		}
 	} else if (rc && rc != -EREMOTE) {
-		rc = dfs_cache_invalidate_tgt(volume_info->UNC + 1);
+		rc = dfs_cache_invalidate_tgt(xid, ses, volume_info->UNC + 1, volume_info->local_nls, 0, NULL); // TODO
 		if (!rc)
 			goto try_mount_again;
 		goto mount_fail_check;
