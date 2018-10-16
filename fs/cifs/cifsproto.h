@@ -566,6 +566,9 @@ void dfs_cache_destroy(void);
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		   const char *path, const struct nls_table *nls_codepage,
 		   int remap, struct dfs_info3_param *refs);
-int dfs_cache_invalidate_tgt(const char *unc);
+int dfs_cache_invalidate_tgt(const unsigned int xid, struct cifs_ses *ses,
+			     const char *path,
+			     const struct nls_table *nls_codepage,
+			     int remap, const char *tgt);
 
 #endif			/* _CIFSPROTO_H */
