@@ -795,11 +795,8 @@ int dfs_cache_invalidate_tgt(unsigned int xid, struct cifs_ses *ses,
 	int rc;
 	char *s;
 
-	cifs_dbg(FYI, "%s: in\n", __func__);
-
 	if (!tree)
 		return -EINVAL;
-	cifs_dbg(FYI, "%s: tree name: %s\n", __func__, tree);
 	if (unlikely(!strchr(tree + 1, '\\')))
 		return -EINVAL;
 	if (unlikely(!dfs_cache_initialized))
