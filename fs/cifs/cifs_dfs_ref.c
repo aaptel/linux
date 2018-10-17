@@ -376,13 +376,12 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 			break;
 
 		rc = dfs_cache_invalidate_tgt(xid, ses,
-					      tlink_tcon(tlink)->treeName,
+					      referral.path_name,
 					      cifs_sb->local_nls,
-					      cifs_remap(cifs_sb),
-					      referral.node_name);
-
-		free_dfs_info_param(&referral);
+					      cifs_remap(cifs_sb));
 	}
+
+	free_dfs_info_param(&referral);
 
 	/* no valid submounts were found; return error from get_dfs_path() by
 	 * preference */
@@ -577,6 +576,8 @@ static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
 {
 	char *tgt;
 
+	cifs_dbg(FYI, "%s: set up new ref\n", __func__);
+
 	memset(ref, 0, sizeof(*ref));
 
 	ref->path_name = kstrndup(path, strlen(path), GFP_KERNEL);
@@ -658,6 +659,9 @@ static struct dfs_cache_entry *get_updated_cache_entry(struct dfs_cache_entry *c
 	cifs_dbg(FYI, "%s: DFS referral request for %s\n", __func__,
 		 path);
 
+	if (!ses || !ses->server || !ses->server->ops->get_dfs_refer)
+		return ERR_PTR(-ENOSYS);
+
 	rc = ses->server->ops->get_dfs_refer(xid, ses, path, &refs, &numrefs,
 					     nls_codepage, remap);
 	if (rc)
@@ -678,10 +682,11 @@ static inline bool is_sysvol_or_netlogon(const char *path)
 		!strncasecmp(s, "netlogon", strlen("netlogon"));
 }
 
-static int _dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-			   const char *path,
-			   const struct nls_table *nls_codepage,
-			   int remap, struct dfs_cache_entry **out_ce)
+static struct dfs_cache_entry *__dfs_cache_find(const unsigned int xid,
+						struct cifs_ses *ses,
+						const char *path,
+						const struct nls_table *nls_codepage,
+						int remap)
 {
 	int rc;
 	struct timespec64 ts;
@@ -689,15 +694,6 @@ static int _dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	struct dfs_cache_entry *ce;
 	struct dfs_info3_param *nrefs;
 	int numnrefs;
-
-	if (!ses || !path || !nls_codepage)
-		return -EINVAL;
-	if (unlikely(!dfs_cache_initialized))
-		return -EINVAL;
-	if (unlikely(!ses->server->ops->get_dfs_refer))
-		return -ENOSYS;
-	if (unlikely(!strchr(path + 1, '\\')))
-		return -EINVAL;
 
 #ifdef CONFIG_CIFS_DEBUG2
 	dump_dfs_cache();
@@ -707,24 +703,31 @@ static int _dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 
 		ce = find_cache_entry(path);
 		if (IS_ERR(ce)) {
+			if (!ses || !ses->server ||
+			    !ses->server->ops->get_dfs_refer) {
+				ce = ERR_PTR(-ENOSYS);
+				break;
+			}
 			rc = ses->server->ops->get_dfs_refer(xid, ses, path,
 							     &nrefs, &numnrefs,
 							     nls_codepage,
 							     remap);
-			if (rc)
-				goto out;
+			if (rc) {
+				ce = ERR_PTR(rc);
+				break;
+			}
 
 			rc = add_cache_entry(path, nrefs, numnrefs);
 			free_dfs_info_array(nrefs, numnrefs);
 
-			if (rc)
-				goto out;
+			if (rc) {
+				ce = ERR_PTR(rc);
+				break;
+			}
 
 			ce = find_cache_entry(path);
-			if (IS_ERR(ce)) {
-				rc = PTR_ERR(ce);
-				goto out;
-			}
+			if (IS_ERR(ce))
+				break;
 		}
 
 		interlink = IS_INTERLINK_SET(ce->flags);
@@ -740,10 +743,9 @@ static int _dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 			ce = get_updated_cache_entry(ce, xid, ses, path,
 						     nls_codepage, remap);
 			if (IS_ERR(ce)) {
-				rc = PTR_ERR(ce);
 				cifs_dbg(FYI, "%s: failed to update expired entry\n",
 					 __func__);
-				goto out;
+				break;
 			}
 			interlink = IS_INTERLINK_SET(ce->flags);
 		}
@@ -754,11 +756,7 @@ static int _dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		path = ce->tgts[ce->tgthint];
 	}
 
-	*out_ce = ce;
-
-out:
-	cifs_dbg(FYI, "%s: rc = %d\n", __func__, rc);
-	return rc;
+	return ce;
 }
 
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
@@ -767,53 +765,53 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 			   int remap, struct dfs_info3_param *ref)
 {
 	int rc;
-	struct dfs_cache_entry *ce = NULL;
+	struct dfs_cache_entry *ce;
 
-	mutex_unlock(&dfs_cache.lock);
-	rc = _dfs_cache_find(xid, ses, path, nls_codepage, remap, &ce);
-	if (rc == 0)
-		rc = setup_ref(path, ce, ref);
+	if (!path)
+		return -EINVAL;
+	if (unlikely(!dfs_cache_initialized))
+		return -EINVAL;
+	if (unlikely(!strchr(path + 1, '\\')))
+		return -EINVAL;
+
 	mutex_lock(&dfs_cache.lock);
+	ce = __dfs_cache_find(xid, ses, path, nls_codepage, remap);
+	if (!IS_ERR(ce))
+		rc = setup_ref(path, ce, ref);
+	else
+		rc = PTR_ERR(ce);
+	mutex_unlock(&dfs_cache.lock);
 
+	cifs_dbg(FYI, "%s: rc = %d\n", __func__, rc);
 	return rc;
 }
 
-
 int dfs_cache_invalidate_tgt(unsigned int xid, struct cifs_ses *ses,
 			     const char *tree,
-			     const struct nls_table *nls_codepage,
-			     int remap,
-			     const char *tgt)
+			     const struct nls_table *nls_codepage, int remap)
 {
 
 	struct dfs_cache_entry *ce;
 	int rc;
-	int i;
 	char *s;
 
+	cifs_dbg(FYI, "%s: in\n", __func__);
 
-	if (!tgt)
+	if (!tree)
 		return -EINVAL;
-
-	cifs_dbg(FYI, "%s: target: %s\n", __func__, tgt);
-
+	cifs_dbg(FYI, "%s: tree name: %s\n", __func__, tree);
+	if (unlikely(!strchr(tree + 1, '\\')))
+		return -EINVAL;
 	if (unlikely(!dfs_cache_initialized))
 		return -EINVAL;
 
-	mutex_lock(&dfs_cache.lock);
-	rc = _dfs_cache_find(xid, ses, tree, nls_codepage, remap, &ce);
-	if (rc)
-		goto out;
+	cifs_dbg(FYI, "%s: tree name: %s\n", __func__, tree);
 
-	for (i = 0; i < ce->numtgts; i++) {
-		if (strcasecmp(ce->tgts[i], tgt) == 0)
-			goto found;
-	}
-	rc = -ENOENT;
-	goto out;
-found:
-	if (ce->tgthint + 1 >= ce->numtgts) {
-		rc = -ENOENT;
+	mutex_lock(&dfs_cache.lock);
+
+	ce = __dfs_cache_find(xid, ses, tree, nls_codepage, remap);
+	if (IS_ERR(ce)) {
+		rc = PTR_ERR(ce);
 		goto out;
 	}
 
@@ -821,15 +819,18 @@ found:
 		 "interlink=%s\n", __func__, ce->prepath, ce->ttl,
 		 ce->etime.tv_nsec, IS_INTERLINK_SET(ce->flags) ? "yes" : "no");
 
-	s = ce->tgts[ce->tgthint];
-	cifs_dbg(FYI, "%s: current tgt hint: %s\n", __func__, s);
-	if (strcasecmp(tgt, s)) {
-		rc = -EINVAL;
+	if (ce->tgthint + 1 >= ce->numtgts) {
+		cifs_dbg(FYI, "%s: no targets left for client target failover\n",
+			 __func__);
+		rc = -ENOENT;
 		goto out;
 	}
 
+	s = ce->tgts[ce->tgthint];
+	cifs_dbg(FYI, "%s: current target: %s\n", __func__, s);
+
 	s = ce->tgts[++ce->tgthint];
-	cifs_dbg(FYI, "%s: new tgt hint: %s\n", __func__, s);
+	cifs_dbg(FYI, "%s: new target: %s\n", __func__, s);
 	rc = 0;
 
 out:

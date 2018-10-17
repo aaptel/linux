@@ -564,11 +564,11 @@ extern void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
 void dfs_cache_init(void);
 void dfs_cache_destroy(void);
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-		   const char *path, const struct nls_table *nls_codepage,
-		   int remap, struct dfs_info3_param *refs);
-int dfs_cache_invalidate_tgt(const unsigned int xid, struct cifs_ses *ses,
-			     const char *path,
-			     const struct nls_table *nls_codepage,
-			     int remap, const char *tgt);
+		   const char *path,
+		   const struct nls_table *nls_codepage,
+		   int remap, struct dfs_info3_param *ref);
+int dfs_cache_invalidate_tgt(unsigned int xid, struct cifs_ses *ses,
+			     const char *tree,
+			     const struct nls_table *nls_codepage, int remap);
 
 #endif			/* _CIFSPROTO_H */
