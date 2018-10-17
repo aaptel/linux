@@ -3256,15 +3256,6 @@ out:
 	return rc;
 }
 
-int
-get_dfs_path(const unsigned int xid, struct cifs_ses *ses, const char *old_path,
-	     const struct nls_table *nls_codepage,
-	     struct dfs_info3_param *referral, int remap)
-{
-	return dfs_cache_find(xid, ses, old_path, nls_codepage, remap,
-			      referral);
-}
-
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 static struct lock_class_key cifs_key[2];
 static struct lock_class_key cifs_slock_key[2];
@@ -3845,12 +3836,10 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-static inline int invalidate_dfs_target(const char *tree,
-					const unsigned int xid,
-					struct cifs_ses *ses,
-					struct smb_vol *volume_info,
-					struct cifs_sb_info *cifs_sb,
-					int check_prefix)
+static int invalidate_dfs_target(const char *tree, const unsigned int xid,
+				 struct cifs_ses *ses,
+				 struct smb_vol *volume_info,
+				 struct cifs_sb_info *cifs_sb, int check_prefix)
 {
 	int rc;
 	struct dfs_info3_param ref = {0};
@@ -3864,8 +3853,8 @@ static inline int invalidate_dfs_target(const char *tree,
 	if (rc)
 		return rc;
 
-	rc = get_dfs_path(xid, ses, tree, cifs_sb->local_nls, &ref,
-			  cifs_remap(cifs_sb));
+	rc = dfs_cache_find(xid, ses, tree, volume_info->local_nls,
+			    cifs_remap(cifs_sb), &ref);
 	if (rc)
 		return rc;
 
@@ -3879,8 +3868,8 @@ static inline int invalidate_dfs_target(const char *tree,
 		mdata = NULL;
 	} else {
 		cleanup_volume_info_contents(volume_info);
-		rc = cifs_setup_volume_info(volume_info, mdata,
-					    fake_devname, false);
+		rc = cifs_setup_volume_info(volume_info, mdata, fake_devname,
+					    false);
 	}
 	kfree(fake_devname);
 	kfree(cifs_sb->mountdata);
@@ -3994,10 +3983,11 @@ cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
 	struct cifs_ses *ses;
 	struct cifs_tcon *tcon;
 	struct TCP_Server_Info *server;
-	char   *full_path = NULL;
+	char   *full_path;
 	struct tcon_link *tlink;
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	int referral_walks_count = 0;
+	char *tree = NULL;
 	int refrc;
 #endif
 
@@ -4019,6 +4009,7 @@ try_mount_again:
 	tcon = NULL;
 	ses = NULL;
 	server = NULL;
+	full_path = NULL;
 	tlink = NULL;
 
 	xid = get_xid();
@@ -4101,8 +4092,8 @@ remote_path_check:
 	 * Chase the referral if found, otherwise continue normally.
 	 */
 	if (referral_walks_count == 0) {
-		full_path = build_unc_path_to_root(volume_info, cifs_sb);
-		if (!full_path) {
+		tree = build_unc_path_to_root(volume_info, cifs_sb);
+		if (!tree) {
 			rc = -ENOMEM;
 			goto mount_fail_check;
 		}
@@ -4113,7 +4104,8 @@ remote_path_check:
 			goto try_mount_again;
 		}
 	} else if (rc && rc != -EREMOTE) {
-		rc = invalidate_dfs_target(full_path + 1, xid, ses, volume_info,
+		/* try next target (if any) from current DFS referral */
+		rc = invalidate_dfs_target(tree + 1, xid, ses, volume_info,
 					   cifs_sb, 0);
 		if (rc)
 			goto mount_fail_check;
@@ -4127,9 +4119,6 @@ remote_path_check:
 			rc = -ENOSYS;
 			goto mount_fail_check;
 		}
-
-		kfree(full_path);
-
 		/*
 		 * cifs_build_path_to_root works only when we have a valid tcon
 		 */
@@ -4225,6 +4214,7 @@ mount_fail_check:
 
 out:
 	free_xid(xid);
+	kfree(tree);
 	return rc;
 }
 
