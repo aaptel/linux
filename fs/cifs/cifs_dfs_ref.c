@@ -26,8 +26,6 @@
 #include "cifs_debug.h"
 #include "cifs_unicode.h"
 
-/* #define DFSREF_CACHE_TEST */
-
 static LIST_HEAD(cifs_dfs_automount_list);
 
 static void cifs_dfs_expire_automounts(struct work_struct *work);
@@ -423,8 +421,10 @@ static inline void dump_tgts(const struct dfs_cache_entry *ce)
 	int i;
 
 	cifs_dbg(FYI, "targets (num=%d):\n", ce->numtgts);
-	for (i = 0; i < ce->numtgts; i++)
-		cifs_dbg(FYI, "  %s\n", ce->tgts[i]);
+	for (i = 0; i < ce->numtgts; i++) {
+		cifs_dbg(FYI, "  %s%s\n", ce->tgts[i],
+			 i == ce->tgthint ? " (target hint)" : "");
+	}
 }
 
 static inline void dump_dfs_cache(void)
@@ -545,12 +545,7 @@ static int add_cache_entry(const char *path, const struct dfs_info3_param *refs,
 	rc = copy_ref_data(refs, numrefs, ce);
 	if (rc)
 		goto out;
-#ifdef DFSREF_CACHE_TEST
-	if (ce->srv_type == DFS_TYPE_ROOT) {
-		ce->ttl = 30;
-		ce->etime = get_expire_time(ce->ttl);
-	}
-#endif
+
 	ce->prepath = kstrndup(path, strlen(path), GFP_KERNEL);
 	if (!ce->prepath) {
 		rc = -ENOMEM;
@@ -695,9 +690,6 @@ static struct dfs_cache_entry *__dfs_cache_find(const unsigned int xid,
 	struct dfs_info3_param *nrefs;
 	int numnrefs;
 
-#ifdef CONFIG_CIFS_DEBUG2
-	dump_dfs_cache();
-#endif
 	for (;;) {
 		cifs_dbg(FYI, "%s: search path: %s\n", __func__, path);
 
@@ -775,6 +767,9 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		return -EINVAL;
 
 	mutex_lock(&dfs_cache.lock);
+#ifdef CONFIG_CIFS_DEBUG2
+	dump_dfs_cache();
+#endif
 	ce = __dfs_cache_find(xid, ses, path, nls_codepage, remap);
 	if (!IS_ERR(ce))
 		rc = setup_ref(path, ce, ref);
@@ -827,7 +822,7 @@ int dfs_cache_invalidate_tgt(unsigned int xid, struct cifs_ses *ses,
 	cifs_dbg(FYI, "%s: current target: %s\n", __func__, s);
 
 	s = ce->tgts[++ce->tgthint];
-	cifs_dbg(FYI, "%s: new target: %s\n", __func__, s);
+	cifs_dbg(FYI, "%s: next target: %s\n", __func__, s);
 	rc = 0;
 
 out:
