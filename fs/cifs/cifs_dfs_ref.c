@@ -350,6 +350,7 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	 */
 	rc = get_dfs_path(xid, ses, full_path + 1, cifs_sb->local_nls,
 			  &referral, cifs_remap(cifs_sb));
+
 	free_xid(xid);
 
 	cifs_put_tlink(tlink);
@@ -377,9 +378,15 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 					      referral.path_name,
 					      cifs_sb->local_nls,
 					      cifs_remap(cifs_sb));
-	}
 
-	free_dfs_info_param(&referral);
+		free_dfs_info_param(&referral);
+
+		if (rc)
+			break;
+
+		rc = get_dfs_path(xid, ses, full_path + 1, cifs_sb->local_nls,
+				  &referral, cifs_remap(cifs_sb));
+	}
 
 	/* no valid submounts were found; return error from get_dfs_path() by
 	 * preference */
@@ -557,6 +564,7 @@ static int add_cache_entry(const char *path, const struct dfs_info3_param *refs,
 		 __func__, ce->prepath, ce->ttl, ce->etime.tv_nsec,
 		 ce->srv_type == DFS_TYPE_LINK ? "link" : "root",
 		 IS_INTERLINK_SET(ce->flags) ? "yes" : "no");
+	cifs_dbg(FYI, "%s: target hint: %s\n", __func__, ce->tgts[ce->tgthint]);
 
 	dfs_cache.numents++;
 	rc = 0;
