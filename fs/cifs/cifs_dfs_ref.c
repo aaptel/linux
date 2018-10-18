@@ -275,22 +275,34 @@ static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
 		struct cifs_sb_info *cifs_sb,
 		const char *fullpath, const struct dfs_info3_param *ref)
 {
+	char *origin_unc;
 	struct vfsmount *mnt;
 	char *mountdata;
 	char *devname = NULL;
+
+	origin_unc = kmalloc(strlen(ref->path_name) + 2, GFP_KERNEL);
+	if (!origin_unc)
+		return ERR_PTR(-ENOMEM);
+	strcpy(origin_unc, "\\");
+	strcat(origin_unc, ref->path_name);
 
 	/* strip first '\' from fullpath */
 	mountdata = cifs_compose_mount_options(cifs_sb->mountdata,
 			fullpath + 1, ref, &devname);
 
-	if (IS_ERR(mountdata))
-		return (struct vfsmount *)mountdata;
+	if (IS_ERR(mountdata)) {
+		mnt = (struct vfsmount *)mountdata;
+		mountdata = NULL;
+		goto out;
+	}
 
-	mnt = vfs_submount(mntpt, &cifs_fs_type, devname, mountdata);
+	mnt = vfs_submount(mntpt, &cifs_fs_type, origin_unc, mountdata);
+
+out:
+	kfree(origin_unc);
 	kfree(mountdata);
 	kfree(devname);
 	return mnt;
-
 }
 
 static void dump_referral(const struct dfs_info3_param *ref)
