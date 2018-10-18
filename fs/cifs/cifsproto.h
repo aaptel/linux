@@ -560,19 +560,18 @@ extern void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
 void dfs_cache_init(void);
 void dfs_cache_destroy(void);
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-		   const char *path,
-		   const struct nls_table *nls_codepage,
-		   int remap, struct dfs_info3_param *ref);
-int dfs_cache_invalidate_tgt(unsigned int xid, struct cifs_ses *ses,
-			     const char *tree,
-			     const struct nls_table *nls_codepage, int remap);
+		   const struct nls_table *nls_codepage, int remap,
+		   const char *path, struct dfs_info3_param *ref);
+int dfs_cache_invalidate_tgt(const unsigned int xid, struct cifs_ses *ses,
+			     const struct nls_table *nls_codepage, int remap,
+			     const char *tree);
 
 static inline int get_dfs_path(const unsigned int xid, struct cifs_ses *ses,
 			       const char *old_path,
 			       const struct nls_table *nls_codepage,
 			       struct dfs_info3_param *referral, int remap)
 {
-	return dfs_cache_find(xid, ses, old_path, nls_codepage, remap,
+	return dfs_cache_find(xid, ses, nls_codepage, remap, old_path,
 			      referral);
 }
 

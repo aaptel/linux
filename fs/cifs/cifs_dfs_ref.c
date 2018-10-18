@@ -374,10 +374,9 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 		if (!IS_ERR(mnt))
 			break;
 
-		rc = dfs_cache_invalidate_tgt(xid, ses,
-					      referral.path_name,
-					      cifs_sb->local_nls,
-					      cifs_remap(cifs_sb));
+		rc = dfs_cache_invalidate_tgt(xid, ses, cifs_sb->local_nls,
+					      cifs_remap(cifs_sb),
+					      referral.path_name);
 
 		free_dfs_info_param(&referral);
 
@@ -632,9 +631,9 @@ static inline struct dfs_cache_entry *find_cache_entry(const char *path)
 	return i >= 0 ? &dfs_cache.ents[i] : ERR_PTR(-ENOENT);
 }
 
-static struct dfs_cache_entry *update_cache_entry(const char *path,
-						  const struct dfs_info3_param *refs,
-						  int numrefs)
+static struct dfs_cache_entry *do_update_cache_entry(const char *path,
+						     const struct dfs_info3_param *refs,
+						     int numrefs)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -648,12 +647,12 @@ static struct dfs_cache_entry *update_cache_entry(const char *path,
 	return ce;
 }
 
-static struct dfs_cache_entry *get_updated_cache_entry(struct dfs_cache_entry *ce,
-						       const unsigned int xid,
+static struct dfs_cache_entry *get_updated_cache_entry(const unsigned int xid,
 						       struct cifs_ses *ses,
-						       const char *path,
 						       const struct nls_table *nls_codepage,
-						       int remap)
+						       int remap,
+						       const char *path,
+						       struct dfs_cache_entry *ce)
 {
 	int rc;
 	struct dfs_info3_param *refs = NULL;
@@ -664,13 +663,15 @@ static struct dfs_cache_entry *get_updated_cache_entry(struct dfs_cache_entry *c
 
 	if (!ses || !ses->server || !ses->server->ops->get_dfs_refer)
 		return ERR_PTR(-ENOSYS);
+	if (unlikely(!nls_codepage))
+		return ERR_PTR(-EINVAL);
 
 	rc = ses->server->ops->get_dfs_refer(xid, ses, path, &refs, &numrefs,
 					     nls_codepage, remap);
 	if (rc)
 		ce = ERR_PTR(rc);
 	else
-		ce = update_cache_entry(path, refs, numrefs);
+		ce = do_update_cache_entry(path, refs, numrefs);
 
 	free_dfs_info_array(refs, numrefs);
 	return ce;
@@ -687,9 +688,8 @@ static inline bool is_sysvol_or_netlogon(const char *path)
 
 static struct dfs_cache_entry *__dfs_cache_find(const unsigned int xid,
 						struct cifs_ses *ses,
-						const char *path,
 						const struct nls_table *nls_codepage,
-						int remap)
+						int remap, const char *path)
 {
 	int rc;
 	struct timespec64 ts;
@@ -706,6 +706,10 @@ static struct dfs_cache_entry *__dfs_cache_find(const unsigned int xid,
 			if (!ses || !ses->server ||
 			    !ses->server->ops->get_dfs_refer) {
 				ce = ERR_PTR(-ENOSYS);
+				break;
+			}
+			if (unlikely(!nls_codepage)) {
+				ce = ERR_PTR(-EINVAL);
 				break;
 			}
 			rc = ses->server->ops->get_dfs_refer(xid, ses, path,
@@ -740,8 +744,8 @@ static struct dfs_cache_entry *__dfs_cache_find(const unsigned int xid,
 		cifs_dbg(FYI, "%s: ctime %ld\n", __func__, ts.tv_nsec);
 		if (timespec64_compare(&ts, &ce->etime) >= 0) {
 			cifs_dbg(FYI, "%s: expired TTL\n", __func__);
-			ce = get_updated_cache_entry(ce, xid, ses, path,
-						     nls_codepage, remap);
+			ce = get_updated_cache_entry(xid, ses, nls_codepage,
+						     remap, path, ce);
 			if (IS_ERR(ce)) {
 				cifs_dbg(FYI, "%s: failed to update expired entry\n",
 					 __func__);
@@ -760,9 +764,8 @@ static struct dfs_cache_entry *__dfs_cache_find(const unsigned int xid,
 }
 
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-			   const char *path,
-			   const struct nls_table *nls_codepage,
-			   int remap, struct dfs_info3_param *ref)
+		   const struct nls_table *nls_codepage, int remap,
+		   const char *path, struct dfs_info3_param *ref)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -778,7 +781,7 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 #ifdef CONFIG_CIFS_DEBUG2
 	dump_dfs_cache();
 #endif
-	ce = __dfs_cache_find(xid, ses, path, nls_codepage, remap);
+	ce = __dfs_cache_find(xid, ses, nls_codepage, remap, path);
 	if (!IS_ERR(ce))
 		rc = setup_ref(path, ce, ref);
 	else
@@ -789,9 +792,9 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-int dfs_cache_invalidate_tgt(unsigned int xid, struct cifs_ses *ses,
-			     const char *tree,
-			     const struct nls_table *nls_codepage, int remap)
+int dfs_cache_invalidate_tgt(const unsigned int xid, struct cifs_ses *ses,
+			     const struct nls_table *nls_codepage, int remap,
+			     const char *tree)
 {
 
 	struct dfs_cache_entry *ce;
@@ -809,7 +812,7 @@ int dfs_cache_invalidate_tgt(unsigned int xid, struct cifs_ses *ses,
 
 	mutex_lock(&dfs_cache.lock);
 
-	ce = __dfs_cache_find(xid, ses, tree, nls_codepage, remap);
+	ce = __dfs_cache_find(xid, ses, nls_codepage, remap, tree);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;

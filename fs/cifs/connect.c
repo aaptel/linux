@@ -325,23 +325,24 @@ static void setup_next_dfs_tgt(struct TCP_Server_Info *server)
 {
 	int rc;
 	struct dfs_info3_param ref = {0};
-	char *path = server->origin_UNC;
+	char *path = server->origin_unc;
 	char *ipaddr = NULL;
 	char *unc;
 
 	if (!path)
 		return;
 
-	cifs_dbg(FYI, "%s: server->origin_UNC: %s\n", __func__, path);
+	cifs_dbg(FYI, "%s: server->origin_unc: %s\n", __func__, path);
 
-	rc = dfs_cache_invalidate_tgt(0, NULL, path + 1, NULL, 0);
+	rc = dfs_cache_invalidate_tgt(0, NULL, NULL, 0, path + 1);
 	if (rc) {
-		cifs_dbg(FYI, "%s: no targets left for reconnecting\n",
+		cifs_dbg(FYI, "%s: no targets left for reconnection\n",
 			 __func__);
 		return;
 	}
 
-	rc = dfs_cache_find(0, NULL, path + 1, NULL, 0, &ref);
+	/* hopefully we'll get an unexpired entry for client target failover */
+	rc = dfs_cache_find(0, NULL, NULL, 0, path + 1, &ref);
 	if (rc)
 		return;
 
@@ -386,6 +387,10 @@ static void setup_next_dfs_tgt(struct TCP_Server_Info *server)
 		cifs_dbg(FYI, "%s: failed to get ipaddr out of hostname\n",
 			 __func__);
 	}
+}
+#else
+static inline void setup_next_dfs_tgt(struct TCP_Server_Info *server)
+{
 }
 #endif
 
@@ -483,15 +488,13 @@ cifs_reconnect(struct TCP_Server_Info *server)
 
 		/* we should try only the port we connected to before */
 		mutex_lock(&server->srv_mutex);
-#ifdef CONFIG_CIFS_DFS_UPCALL
-		setup_next_dfs_tgt(server);
-#endif
 		if (cifs_rdma_enabled(server))
 			rc = smbd_reconnect(server);
 		else
 			rc = generic_ip_connect(server);
 		if (rc) {
 			cifs_dbg(FYI, "reconnect error %d\n", rc);
+			setup_next_dfs_tgt(server);
 			mutex_unlock(&server->srv_mutex);
 			msleep(3000);
 		} else {
@@ -847,7 +850,7 @@ static void clean_demultiplex_info(struct TCP_Server_Info *server)
 		 */
 	}
 
-	kfree(server->origin_UNC);
+	kfree(server->origin_unc);
 	kfree(server->hostname);
 	kfree(server);
 
@@ -1118,6 +1121,8 @@ extract_hostname(const char *unc)
 
 	/* skip double chars at beginning of string */
 	/* BB: check validity of these bytes? */
+	if (strlen(unc) < 3)
+		return ERR_PTR(-EINVAL);
 	for (src = unc; *src && *src == '\\'; src++);
 	if (!*src)
 		return ERR_PTR(-EINVAL);
@@ -2455,8 +2460,8 @@ cifs_get_tcp_session(struct smb_vol *volume_info, const char *tree)
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	if (tree) {
 		cifs_dbg(FYI, "origin UNC: %s\n", tree);
-		tcp_ses->origin_UNC = kstrndup(tree, strlen(tree), GFP_KERNEL);
-		if (!tcp_ses->origin_UNC) {
+		tcp_ses->origin_unc = kstrndup(tree, strlen(tree), GFP_KERNEL);
+		if (!tcp_ses->origin_unc) {
 			rc = -ENOMEM;
 			goto out_err_crypto_release;
 		}
@@ -3923,10 +3928,10 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-static int invalidate_dfs_target(const char *tree, const unsigned int xid,
-				 struct cifs_ses *ses,
+static int invalidate_dfs_target(const unsigned int xid, struct cifs_ses *ses,
 				 struct smb_vol *volume_info,
-				 struct cifs_sb_info *cifs_sb, int check_prefix)
+				 struct cifs_sb_info *cifs_sb, int check_prefix,
+				 const char *tree)
 {
 	int rc;
 	struct dfs_info3_param ref = {0};
@@ -3935,13 +3940,13 @@ static int invalidate_dfs_target(const char *tree, const unsigned int xid,
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
 		return -EREMOTE;
 
-	rc = dfs_cache_invalidate_tgt(xid, ses, tree, volume_info->local_nls,
-				      0);
+	rc = dfs_cache_invalidate_tgt(xid, ses, volume_info->local_nls, 0,
+				      tree);
 	if (rc)
 		return rc;
 
-	rc = dfs_cache_find(xid, ses, tree, volume_info->local_nls,
-			    cifs_remap(cifs_sb), &ref);
+	rc = dfs_cache_find(xid, ses, volume_info->local_nls,
+			    cifs_remap(cifs_sb), tree, &ref);
 	if (rc)
 		return rc;
 
@@ -4107,7 +4112,7 @@ try_mount_again:
 		rc = PTR_ERR(server);
 		server = NULL;
 #ifdef CONFIG_CIFS_DFS_UPCALL
-		goto remote_path_check;
+		goto try_next_dfs_tgt;
 #endif
 		goto out;
 	}
@@ -4122,7 +4127,7 @@ try_mount_again:
 		rc = PTR_ERR(ses);
 		ses = NULL;
 #ifdef CONFIG_CIFS_DFS_UPCALL
-		goto remote_path_check;
+		goto try_next_dfs_tgt;
 #endif
 		goto mount_fail_check;
 	}
@@ -4170,6 +4175,7 @@ try_mount_again:
 	cifs_sb->rsize = server->ops->negotiate_rsize(tcon, volume_info);
 
 remote_path_check:
+try_next_dfs_tgt:
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	/*
 	 * Perform an unconditional check for whether there are DFS
@@ -4192,8 +4198,8 @@ remote_path_check:
 		}
 	} else if (rc && rc != -EREMOTE) {
 		/* try next target (if any) from current DFS referral */
-		rc = invalidate_dfs_target(tree + 1, xid, ses, volume_info,
-					   cifs_sb, 0);
+		rc = invalidate_dfs_target(xid, ses, volume_info, cifs_sb, 0,
+					   tree + 1);
 		if (rc)
 			goto mount_fail_check;
 		goto try_mount_again;
