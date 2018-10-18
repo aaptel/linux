@@ -56,6 +56,7 @@
 #include "fscache.h"
 #include "smb2proto.h"
 #include "smbdirect.h"
+#include "dns_resolve.h"
 
 extern mempool_t *cifs_req_poolp;
 extern bool disable_legacy_dialects;
@@ -317,6 +318,76 @@ static void tlink_rb_insert(struct rb_root *root, struct tcon_link *new_tlink);
 static void cifs_prune_tlinks(struct work_struct *work);
 static int cifs_setup_volume_info(struct smb_vol *volume_info, char *mount_data,
 					const char *devname, bool is_smb3);
+static char *extract_hostname(const char *unc);
+
+#ifdef CONFIG_CIFS_DFS_UPCALL
+static void setup_next_dfs_tgt(struct TCP_Server_Info *server)
+{
+	int rc;
+	struct dfs_info3_param ref = {0};
+	char *path = server->origin_UNC;
+	char *ipaddr = NULL;
+	char *unc;
+
+	if (!path)
+		return;
+
+	cifs_dbg(FYI, "%s: server->origin_UNC: %s\n", __func__, path);
+
+	rc = dfs_cache_invalidate_tgt(0, NULL, path + 1, NULL, 0);
+	if (rc) {
+		cifs_dbg(FYI, "%s: no targets left for reconnecting\n",
+			 __func__);
+		return;
+	}
+
+	rc = dfs_cache_find(0, NULL, path + 1, NULL, 0, &ref);
+	if (rc)
+		return;
+
+	cifs_dbg(FYI, "%s: retry next target: %s\n", __func__,
+		 ref.node_name);
+
+	kfree(server->hostname);
+	server->hostname = extract_hostname(ref.node_name);
+	free_dfs_info_param(&ref);
+
+	if (!server->hostname) {
+		cifs_dbg(VFS, "%s: failed to extract hostname from target: %d\n",
+			 __func__, -ENOMEM);
+		return;
+	}
+	cifs_dbg(FYI, "%s: server->hostname: %s\n", __func__,
+		 server->hostname);
+
+	unc = kmalloc(strlen(server->hostname) + 3, GFP_KERNEL);
+	if (!unc) {
+		cifs_dbg(FYI, "%s: failed to create UNC path: %d\n", __func__,
+			 -ENOMEM);
+		return;
+	}
+	strcpy(unc, "\\\\");
+	strcat(unc, server->hostname);
+
+	rc = dns_resolve_server_name_to_ip(unc, &ipaddr);
+	kfree(unc);
+
+	if (rc < 0) {
+		cifs_dbg(FYI, "%s: Failed to resolve server part of %s to IP: %d\n",
+			 __func__, server->hostname, rc);
+		return;
+	}
+
+	rc = cifs_convert_address((struct sockaddr *)&server->dstaddr, ipaddr,
+				  strlen(ipaddr));
+	kfree(ipaddr);
+
+	if (!rc) {
+		cifs_dbg(FYI, "%s: failed to get ipaddr out of hostname\n",
+			 __func__);
+	}
+}
+#endif
 
 /*
  * cifs tcp session reconnection
@@ -412,6 +483,9 @@ cifs_reconnect(struct TCP_Server_Info *server)
 
 		/* we should try only the port we connected to before */
 		mutex_lock(&server->srv_mutex);
+#ifdef CONFIG_CIFS_DFS_UPCALL
+		setup_next_dfs_tgt(server);
+#endif
 		if (cifs_rdma_enabled(server))
 			rc = smbd_reconnect(server);
 		else
@@ -773,6 +847,7 @@ static void clean_demultiplex_info(struct TCP_Server_Info *server)
 		 */
 	}
 
+	kfree(server->origin_UNC);
 	kfree(server->hostname);
 	kfree(server);
 
@@ -1043,7 +1118,9 @@ extract_hostname(const char *unc)
 
 	/* skip double chars at beginning of string */
 	/* BB: check validity of these bytes? */
-	src = unc + 2;
+	for (src = unc; *src && *src == '\\'; src++);
+	if (!*src)
+		return ERR_PTR(-EINVAL);
 
 	/* delimiter between hostname and sharename is always '\\' now */
 	delim = strchr(src, '\\');
@@ -2354,7 +2431,7 @@ cifs_put_tcp_session(struct TCP_Server_Info *server, int from_reconnect)
 }
 
 static struct TCP_Server_Info *
-cifs_get_tcp_session(struct smb_vol *volume_info)
+cifs_get_tcp_session(struct smb_vol *volume_info, const char *tree)
 {
 	struct TCP_Server_Info *tcp_ses = NULL;
 	int rc;
@@ -2375,6 +2452,16 @@ cifs_get_tcp_session(struct smb_vol *volume_info)
 	tcp_ses->ops = volume_info->ops;
 	tcp_ses->vals = volume_info->vals;
 	cifs_set_net_ns(tcp_ses, get_net(current->nsproxy->net_ns));
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	if (tree) {
+		cifs_dbg(FYI, "origin UNC: %s\n", tree);
+		tcp_ses->origin_UNC = kstrndup(tree, strlen(tree), GFP_KERNEL);
+		if (!tcp_ses->origin_UNC) {
+			rc = -ENOMEM;
+			goto out_err_crypto_release;
+		}
+	}
+#endif
 	tcp_ses->hostname = extract_hostname(volume_info->UNC);
 	if (IS_ERR(tcp_ses->hostname)) {
 		rc = PTR_ERR(tcp_ses->hostname);
@@ -3985,9 +4072,9 @@ cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
 	struct TCP_Server_Info *server;
 	char   *full_path;
 	struct tcon_link *tlink;
+	char *tree = NULL;
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	int referral_walks_count = 0;
-	char *tree = NULL;
 	int refrc;
 #endif
 
@@ -4015,7 +4102,7 @@ try_mount_again:
 	xid = get_xid();
 
 	/* get a reference to a tcp session */
-	server = cifs_get_tcp_session(volume_info);
+	server = cifs_get_tcp_session(volume_info, tree);
 	if (IS_ERR(server)) {
 		rc = PTR_ERR(server);
 		server = NULL;

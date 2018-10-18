@@ -614,6 +614,9 @@ struct TCP_Server_Info {
 	struct smb_version_operations	*ops;
 	struct smb_version_values	*vals;
 	enum statusEnum tcpStatus; /* what we think the status is */
+#ifdef CONFIG_CIFS_UPCALL
+	char *origin_UNC;
+#endif
 	char *hostname; /* hostname portion of UNC string */
 	struct socket *ssocket;
 	struct sockaddr_storage dstaddr;
