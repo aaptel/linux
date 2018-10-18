@@ -57,6 +57,7 @@
 #include "smb2proto.h"
 #include "smbdirect.h"
 #include "dns_resolve.h"
+#include "cifsfs.h"
 
 extern mempool_t *cifs_req_poolp;
 extern bool disable_legacy_dialects;
@@ -319,47 +320,96 @@ static void cifs_prune_tlinks(struct work_struct *work);
 static int cifs_setup_volume_info(struct smb_vol *volume_info, char *mount_data,
 					const char *devname, bool is_smb3);
 static char *extract_hostname(const char *unc);
+struct cifs_tcon *
+cifs_sb_master_tcon(struct cifs_sb_info *cifs_sb);
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
+struct cb_data {
+	struct TCP_Server_Info *server;
+	struct cifs_sb_info *cifs_sb;
+};
+
+static void super_cb(struct super_block *sb, void *arg)
+{
+	struct cb_data *d = arg;
+	struct cifs_sb_info *cifs_sb;
+	struct cifs_tcon *tcon;
+
+	if (d->cifs_sb)
+		return;
+
+	cifs_sb = CIFS_SB(sb);
+	tcon = cifs_sb_master_tcon(cifs_sb);
+	if (tcon->ses->server == d->server) {
+		if (cifs_sb->origin_unc)
+			d->cifs_sb = cifs_sb;
+		else
+			d->cifs_sb = ERR_PTR(-ENOENT);
+	}
+}
+
+static inline struct cifs_sb_info *find_super_by_tcp(struct TCP_Server_Info *server)
+{
+	struct cb_data d = {
+		.server = server,
+		.cifs_sb = NULL,
+	};
+	iterate_supers_type(&cifs_fs_type, super_cb, &d);
+	return d.cifs_sb;
+}
+
 static void setup_next_dfs_tgt(struct TCP_Server_Info *server)
 {
+	struct cifs_sb_info *cifs_sb;
+	struct cifs_tcon *tcon;
+	char *path;
 	int rc;
 	struct dfs_info3_param ref = {0};
-	char *path = server->origin_unc;
 	char *ipaddr = NULL;
 	char *unc;
 
-	if (!path)
+	cifs_sb = find_super_by_tcp(server);
+	if (IS_ERR(cifs_sb))
 		return;
 
-	cifs_dbg(FYI, "%s: server->origin_unc: %s\n", __func__, path);
+	path = cifs_sb->origin_unc + 1;
 
-	rc = dfs_cache_invalidate_tgt(0, NULL, NULL, 0, path + 1);
+	cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__, path);
+
+	rc = dfs_cache_invalidate_tgt(0, NULL, NULL, 0, path);
 	if (rc) {
-		cifs_dbg(FYI, "%s: no targets left for reconnection\n",
+		cifs_dbg(FYI, "%s: no targets left for client failover\n",
 			 __func__);
 		return;
 	}
 
-	/* hopefully we'll get an unexpired entry for client target failover */
-	rc = dfs_cache_find(0, NULL, NULL, 0, path + 1, &ref);
+	/* hopefully we'll get an unexpired entry from DFS referral cache */
+	rc = dfs_cache_find(0, NULL, NULL, 0, path, &ref);
 	if (rc)
 		return;
 
-	cifs_dbg(FYI, "%s: retry next target: %s\n", __func__,
-		 ref.node_name);
+	cifs_dbg(FYI, "%s: next target: %s\n", __func__, ref.node_name);
 
 	kfree(server->hostname);
-	server->hostname = extract_hostname(ref.node_name);
-	free_dfs_info_param(&ref);
 
+	server->hostname = extract_hostname(ref.node_name);
 	if (!server->hostname) {
+		free_dfs_info_param(&ref);
 		cifs_dbg(VFS, "%s: failed to extract hostname from target: %d\n",
 			 __func__, -ENOMEM);
 		return;
 	}
-	cifs_dbg(FYI, "%s: server->hostname: %s\n", __func__,
-		 server->hostname);
+
+	tcon = cifs_sb_master_tcon(cifs_sb);
+
+	tcon->treeName[0] = '\0';
+	strcpy(tcon->treeName, "\\");
+	strcat(tcon->treeName, ref.node_name);
+
+	free_dfs_info_param(&ref);
+
+	cifs_dbg(FYI, "%s: new tcon->treeName: %s\n", __func__,
+		 tcon->treeName);
 
 	unc = kmalloc(strlen(server->hostname) + 3, GFP_KERNEL);
 	if (!unc) {
@@ -494,6 +544,7 @@ cifs_reconnect(struct TCP_Server_Info *server)
 			rc = generic_ip_connect(server);
 		if (rc) {
 			cifs_dbg(FYI, "reconnect error %d\n", rc);
+			/* set up any other target server for client failover */
 			setup_next_dfs_tgt(server);
 			mutex_unlock(&server->srv_mutex);
 			msleep(3000);
@@ -850,7 +901,6 @@ static void clean_demultiplex_info(struct TCP_Server_Info *server)
 		 */
 	}
 
-	kfree(server->origin_unc);
 	kfree(server->hostname);
 	kfree(server);
 
@@ -2436,7 +2486,7 @@ cifs_put_tcp_session(struct TCP_Server_Info *server, int from_reconnect)
 }
 
 static struct TCP_Server_Info *
-cifs_get_tcp_session(struct smb_vol *volume_info, const char *tree)
+cifs_get_tcp_session(struct smb_vol *volume_info)
 {
 	struct TCP_Server_Info *tcp_ses = NULL;
 	int rc;
@@ -2457,16 +2507,6 @@ cifs_get_tcp_session(struct smb_vol *volume_info, const char *tree)
 	tcp_ses->ops = volume_info->ops;
 	tcp_ses->vals = volume_info->vals;
 	cifs_set_net_ns(tcp_ses, get_net(current->nsproxy->net_ns));
-#ifdef CONFIG_CIFS_DFS_UPCALL
-	if (tree) {
-		cifs_dbg(FYI, "origin UNC: %s\n", tree);
-		tcp_ses->origin_unc = kstrndup(tree, strlen(tree), GFP_KERNEL);
-		if (!tcp_ses->origin_unc) {
-			rc = -ENOMEM;
-			goto out_err_crypto_release;
-		}
-	}
-#endif
 	tcp_ses->hostname = extract_hostname(volume_info->UNC);
 	if (IS_ERR(tcp_ses->hostname)) {
 		rc = PTR_ERR(tcp_ses->hostname);
@@ -3918,7 +3958,7 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		} else {
 			cleanup_volume_info_contents(volume_info);
 			rc = cifs_setup_volume_info(volume_info, mdata,
-							fake_devname, false);
+						    fake_devname, false);
 		}
 		kfree(fake_devname);
 		kfree(cifs_sb->mountdata);
@@ -4107,7 +4147,7 @@ try_mount_again:
 	xid = get_xid();
 
 	/* get a reference to a tcp session */
-	server = cifs_get_tcp_session(volume_info, tree);
+	server = cifs_get_tcp_session(volume_info);
 	if (IS_ERR(server)) {
 		rc = PTR_ERR(server);
 		server = NULL;
@@ -4185,11 +4225,16 @@ try_next_dfs_tgt:
 	 * Chase the referral if found, otherwise continue normally.
 	 */
 	if (referral_walks_count == 0) {
-		tree = build_unc_path_to_root(volume_info, cifs_sb);
-		if (!tree) {
-			rc = -ENOMEM;
-			goto mount_fail_check;
+		if (cifs_sb->origin_unc) {
+			tree = cifs_sb->origin_unc;
+		} else {
+			tree = build_unc_path_to_root(volume_info, cifs_sb);
+			if (!tree) {
+				rc = -ENOMEM;
+				goto mount_fail_check;
+			}
 		}
+		cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__, tree);
 		refrc = expand_dfs_referral(xid, ses, volume_info, cifs_sb,
 					    false);
 		if (!refrc) {
@@ -4284,6 +4329,7 @@ try_next_dfs_tgt:
 	set_bit(TCON_LINK_MASTER, &tlink->tl_flags);
 	set_bit(TCON_LINK_IN_TREE, &tlink->tl_flags);
 
+	cifs_sb->origin_unc = tree;
 	cifs_sb->master_tlink = tlink;
 	spin_lock(&cifs_sb->tlink_tree_lock);
 	tlink_rb_insert(&cifs_sb->tlink_tree, tlink);
@@ -4303,11 +4349,12 @@ mount_fail_check:
 			cifs_put_smb_ses(ses);
 		else if (server)
 			cifs_put_tcp_session(server, 0);
+		if (tree != cifs_sb->origin_unc)
+			kfree(tree);
 	}
 
 out:
 	free_xid(xid);
-	kfree(tree);
 	return rc;
 }
 

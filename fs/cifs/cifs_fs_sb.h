@@ -73,5 +73,6 @@ struct cifs_sb_info {
 	struct delayed_work prune_tlinks;
 	struct rcu_head rcu;
 	char *prepath;
+	char *origin_unc;
 };
 #endif				/* _CIFS_FS_SB_H */
