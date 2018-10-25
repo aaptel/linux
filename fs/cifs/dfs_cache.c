@@ -76,7 +76,7 @@ static inline void dump_tgts(const struct dfs_cache_entry *ce)
 static inline void dump_ce(const struct dfs_cache_entry *ce)
 {
 	cifs_dbg(FYI, "cache entry: path=%s,ttl=%d,etime=%ld,"
-		 "interlink=%s,path_consumed=%d\n", ce->ce_prepath, ce->ce_ttl,
+		 "interlink=%s,path_consumed=%d\n", ce->ce_path, ce->ce_ttl,
 		 ce->ce_etime.tv_nsec,
 		 IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no",
 		 ce->ce_path_consumed);
