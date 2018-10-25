@@ -58,6 +58,7 @@
 #include "smbdirect.h"
 #include "dns_resolve.h"
 #include "cifsfs.h"
+#include "dfs_cache.h"
 
 extern mempool_t *cifs_req_poolp;
 extern bool disable_legacy_dialects;
@@ -324,14 +325,14 @@ struct cifs_tcon *
 cifs_sb_master_tcon(struct cifs_sb_info *cifs_sb);
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
-struct cb_data {
+struct super_cb_data {
 	struct TCP_Server_Info *server;
 	struct cifs_sb_info *cifs_sb;
 };
 
 static void super_cb(struct super_block *sb, void *arg)
 {
-	struct cb_data *d = arg;
+	struct super_cb_data *d = arg;
 	struct cifs_sb_info *cifs_sb;
 	struct cifs_tcon *tcon;
 
@@ -350,14 +351,16 @@ static void super_cb(struct super_block *sb, void *arg)
 
 static inline struct cifs_sb_info *find_super_by_tcp(struct TCP_Server_Info *server)
 {
-	struct cb_data d = {
+	struct super_cb_data d = {
 		.server = server,
 		.cifs_sb = NULL,
 	};
+
 	iterate_supers_type(&cifs_fs_type, super_cb, &d);
 	return d.cifs_sb;
 }
 
+/* assuming it's called with server->srv_mutex lock held */
 static void setup_next_dfs_tgt(struct TCP_Server_Info *server)
 {
 	struct cifs_sb_info *cifs_sb;
@@ -367,6 +370,7 @@ static void setup_next_dfs_tgt(struct TCP_Server_Info *server)
 	struct dfs_info3_param ref = {0};
 	char *ipaddr = NULL;
 	char *unc;
+	int len;
 
 	cifs_sb = find_super_by_tcp(server);
 	if (IS_ERR(cifs_sb))
@@ -376,17 +380,12 @@ static void setup_next_dfs_tgt(struct TCP_Server_Info *server)
 
 	cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__, path);
 
-	rc = dfs_cache_invalidate_tgt(0, NULL, NULL, 0, path);
+	rc = dfs_cache_noreq_inval_tgt(path, &ref);
 	if (rc) {
 		cifs_dbg(FYI, "%s: no targets left for client failover\n",
 			 __func__);
 		return;
 	}
-
-	/* hopefully we'll get an unexpired entry from DFS referral cache */
-	rc = dfs_cache_find(0, NULL, NULL, 0, path, &ref);
-	if (rc)
-		return;
 
 	cifs_dbg(FYI, "%s: next target: %s\n", __func__, ref.node_name);
 
@@ -402,23 +401,22 @@ static void setup_next_dfs_tgt(struct TCP_Server_Info *server)
 
 	tcon = cifs_sb_master_tcon(cifs_sb);
 
-	tcon->treeName[0] = '\0';
-	strcpy(tcon->treeName, "\\");
-	strcat(tcon->treeName, ref.node_name);
+	snprintf(tcon->treeName, sizeof(tcon->treeName), "\\%s", ref.node_name);
 
 	free_dfs_info_param(&ref);
 
 	cifs_dbg(FYI, "%s: new tcon->treeName: %s\n", __func__,
 		 tcon->treeName);
 
-	unc = kmalloc(strlen(server->hostname) + 3, GFP_KERNEL);
+	len = strlen(server->hostname) + 3;
+
+	unc = kmalloc(len, GFP_KERNEL);
 	if (!unc) {
 		cifs_dbg(FYI, "%s: failed to create UNC path: %d\n", __func__,
 			 -ENOMEM);
 		return;
 	}
-	strcpy(unc, "\\\\");
-	strcat(unc, server->hostname);
+	snprintf(unc, len, "\\\\%s", server->hostname);
 
 	rc = dns_resolve_server_name_to_ip(unc, &ipaddr);
 	kfree(unc);
@@ -3980,13 +3978,8 @@ static int invalidate_dfs_target(const unsigned int xid, struct cifs_ses *ses,
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
 		return -EREMOTE;
 
-	rc = dfs_cache_invalidate_tgt(xid, ses, volume_info->local_nls, 0,
-				      tree);
-	if (rc)
-		return rc;
-
-	rc = dfs_cache_find(xid, ses, volume_info->local_nls,
-			    cifs_remap(cifs_sb), tree, &ref);
+	rc = dfs_cache_inval_tgt(xid, ses, volume_info->local_nls, 0, tree,
+				 &ref);
 	if (rc)
 		return rc;
 
