@@ -44,11 +44,12 @@ struct dfs_cache_tgt {
 
 struct dfs_cache_entry {
 	struct hlist_node ce_hlist;
-	const char *ce_prepath;
+	const char *ce_path;
 	int ce_ttl;
 	int ce_srvtype;
 	int ce_flags;
 	struct timespec64 ce_etime;
+	int ce_path_consumed;
 	struct list_head ce_tlist;
 	struct dfs_cache_tgt *ce_tgthint;
 	struct rcu_head ce_rcu;
@@ -74,10 +75,11 @@ static inline void dump_tgts(const struct dfs_cache_entry *ce)
 
 static inline void dump_ce(const struct dfs_cache_entry *ce)
 {
-	cifs_dbg(FYI, "cache entry: prepath=%s,ttl=%d,etime=%ld,"
-		 "interlink=%s\n", ce->ce_prepath, ce->ce_ttl,
+	cifs_dbg(FYI, "cache entry: path=%s,ttl=%d,etime=%ld,"
+		 "interlink=%s,path_consumed=%d\n", ce->ce_prepath, ce->ce_ttl,
 		 ce->ce_etime.tv_nsec,
-		 IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no");
+		 IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no",
+		 ce->ce_path_consumed);
 	dump_tgts(ce);
 }
 
@@ -213,6 +215,7 @@ static int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
 	ce->ce_etime = get_expire_time(ce->ce_ttl);
 	ce->ce_srvtype = refs[0].server_type;
 	ce->ce_flags = refs[0].ref_flag;
+	ce->ce_path_consumed = refs[0].path_consumed;
 
 	for (i = 0; i < numrefs; i++) {
 		struct dfs_cache_tgt *t;
@@ -247,8 +250,8 @@ static struct dfs_cache_entry *alloc_cache_entry(const char *path,
 	if (!ce)
 		return ERR_PTR(-ENOMEM);
 
-	ce->ce_prepath = kstrdup_const(path, GFP_KERNEL);
-	if (!ce->ce_prepath) {
+	ce->ce_path = kstrdup_const(path, GFP_KERNEL);
+	if (!ce->ce_path) {
 		kfree(ce);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -257,7 +260,7 @@ static struct dfs_cache_entry *alloc_cache_entry(const char *path,
 
 	rc = copy_ref_data(refs, numrefs, ce, NULL);
 	if (rc) {
-		kfree(ce->ce_prepath);
+		kfree(ce->ce_path);
 		kfree(ce);
 		ce = ERR_PTR(rc);
 	}
@@ -287,7 +290,7 @@ static inline struct dfs_cache_entry *find_cache_entry(unsigned int hash,
 
 	rcu_read_lock();
 	hlist_for_each_entry_rcu(ce, &dfs_cache_htable[hash], ce_hlist) {
-		if (!strncmp(ce->ce_prepath, path, strlen(path))) {
+		if (!strncmp(ce->ce_path, path, strlen(path))) {
 			cifs_dbg(FYI, "%s: cache hit\n", __func__);
 			cifs_dbg(FYI, "%s: target hint: %s\n", __func__,
 				 get_tgt_name(ce));
@@ -312,7 +315,7 @@ static inline void flush_cache_ent(struct dfs_cache_entry *ce)
 		return;
 
 	hlist_del_init_rcu(&ce->ce_hlist);
-	kfree(ce->ce_prepath);
+	kfree(ce->ce_path);
 	free_tgts(ce);
 	call_rcu(&ce->ce_rcu, free_cache_entry);
 }
@@ -513,7 +516,7 @@ static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
 	if (!ref->path_name)
 		return -ENOMEM;
 
-	ref->path_consumed = strlen(path);
+	ref->path_consumed = ce->ce_path_consumed;
 
 	tgt = get_tgt_name(ce);
 
