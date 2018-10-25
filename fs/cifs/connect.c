@@ -4110,7 +4110,6 @@ cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
 	struct TCP_Server_Info *server;
 	char   *full_path;
 	struct tcon_link *tlink;
-	char *tree = NULL;
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	int referral_walks_count = 0;
 	int refrc;
@@ -4218,16 +4217,19 @@ try_next_dfs_tgt:
 	 * Chase the referral if found, otherwise continue normally.
 	 */
 	if (referral_walks_count == 0) {
-		if (cifs_sb->origin_unc) {
-			tree = cifs_sb->origin_unc;
-		} else {
-			tree = build_unc_path_to_root(volume_info, cifs_sb);
-			if (!tree) {
+		/*
+		 * If there is no prefix path, we're mounting a DFS root, so
+		 * save its UNC path for client target failover.
+		 */
+		if (!volume_info->prepath) {
+			cifs_sb->origin_unc = build_unc_path_to_root(volume_info, cifs_sb);
+			if (!cifs_sb->origin_unc) {
 				rc = -ENOMEM;
 				goto mount_fail_check;
 			}
+			cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__,
+				 cifs_sb->origin_unc);
 		}
-		cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__, tree);
 		refrc = expand_dfs_referral(xid, ses, volume_info, cifs_sb,
 					    false);
 		if (!refrc) {
@@ -4237,11 +4239,25 @@ try_next_dfs_tgt:
 	} else if (rc && rc != -EREMOTE) {
 		/* try next target (if any) from current DFS referral */
 		rc = invalidate_dfs_target(xid, ses, volume_info, cifs_sb, 0,
-					   tree + 1);
+					   cifs_sb->origin_unc ?
+					   cifs_sb->origin_unc + 1 : NULL);
 		if (rc)
 			goto mount_fail_check;
 		goto try_mount_again;
 	}
+	/* If origin UNC path wasn't saved previously, then it means that we've
+	 * got a prefix path and DFS root was already resolved in last
+	 * expand_dfs_referral() call, thus save resolved target server + prefix
+	 * path to be used during client target failover.
+	 */
+	if (!cifs_sb->origin_unc && volume_info->prepath) {
+		cifs_sb->origin_unc = build_unc_path_to_root(volume_info, cifs_sb);
+		if (!cifs_sb->origin_unc) {
+			rc = -ENOMEM;
+			goto mount_fail_check;
+		}
+	}
+	cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__, cifs_sb->origin_unc);
 #endif
 
 	/* check if a whole path is not remote */
@@ -4322,7 +4338,6 @@ try_next_dfs_tgt:
 	set_bit(TCON_LINK_MASTER, &tlink->tl_flags);
 	set_bit(TCON_LINK_IN_TREE, &tlink->tl_flags);
 
-	cifs_sb->origin_unc = tree;
 	cifs_sb->master_tlink = tlink;
 	spin_lock(&cifs_sb->tlink_tree_lock);
 	tlink_rb_insert(&cifs_sb->tlink_tree, tlink);
@@ -4342,8 +4357,6 @@ mount_fail_check:
 			cifs_put_smb_ses(ses);
 		else if (server)
 			cifs_put_tcp_session(server, 0);
-		if (tree != cifs_sb->origin_unc)
-			kfree(tree);
 	}
 
 out:
