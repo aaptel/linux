@@ -89,13 +89,14 @@ static inline void dump_refs(const struct dfs_info3_param *refs, int numrefs)
 	for (i = 0; i < numrefs; i++) {
 		const struct dfs_info3_param *ref = &refs[i];
 		cifs_dbg(FYI,
+			 "\n"
 			 "flags:         0x%x\n"
 			 "path_consumed: %d\n"
 			 "server_type:   0x%x\n"
 			 "ref_flag:      0x%x\n"
 			 "path_name:     %s\n"
 			 "node_name:     %s\n"
-			 "ttl:           %d (%ds)\n",
+			 "ttl:           %d (%dm)\n",
 			 ref->flags, ref->path_consumed, ref->server_type,
 			 ref->ref_flag, ref->path_name, ref->node_name,
 			 ref->ttl, ref->ttl / 60);
