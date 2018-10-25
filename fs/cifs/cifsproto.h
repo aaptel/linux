@@ -22,6 +22,7 @@
 #define _CIFSPROTO_H
 #include <linux/nls.h>
 #include "trace.h"
+#include "dfs_cache.h"
 
 struct statfs;
 struct smb_vol;
@@ -556,15 +557,6 @@ void cifs_free_hash(struct crypto_shash **shash, struct sdesc **sdesc);
 
 extern void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
 				unsigned int *len, unsigned int *offset);
-
-void dfs_cache_init(void);
-void dfs_cache_destroy(void);
-int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-		   const struct nls_table *nls_codepage, int remap,
-		   const char *path, struct dfs_info3_param *ref);
-int dfs_cache_invalidate_tgt(const unsigned int xid, struct cifs_ses *ses,
-			     const struct nls_table *nls_codepage, int remap,
-			     const char *tree);
 
 static inline int get_dfs_path(const unsigned int xid, struct cifs_ses *ses,
 			       const char *old_path,

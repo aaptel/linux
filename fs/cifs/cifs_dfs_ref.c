@@ -25,6 +25,7 @@
 #include "dns_resolve.h"
 #include "cifs_debug.h"
 #include "cifs_unicode.h"
+#include "dfs_cache.h"
 
 static LIST_HEAD(cifs_dfs_automount_list);
 
@@ -32,32 +33,6 @@ static void cifs_dfs_expire_automounts(struct work_struct *work);
 static DECLARE_DELAYED_WORK(cifs_dfs_automount_task,
 			    cifs_dfs_expire_automounts);
 static int cifs_dfs_mountpoint_expiry_timeout = 500 * HZ;
-
-#define DFS_CACHE_ENTS_MAX 32
-#define DFS_CACHE_TGTS_MAX 128
-
-#define IS_INTERLINK_SET(v) ((v) & (DFSREF_REFERRAL_SERVER | \
-				    DFSREF_STORAGE_SERVER))
-
-struct dfs_cache_entry {
-	char *prepath;
-	int ttl;
-	int srv_type;
-	int flags;
-	struct timespec64 etime;
-	int numtgts;
-	char *tgts[DFS_CACHE_TGTS_MAX];
-	int tgthint;
-};
-
-struct dfs_cache {
-	struct mutex lock;
-	int numents;
-	struct dfs_cache_entry ents[DFS_CACHE_ENTS_MAX];
-};
-
-static struct dfs_cache dfs_cache;
-static bool dfs_cache_initialized;
 
 static void cifs_dfs_expire_automounts(struct work_struct *work)
 {
@@ -275,16 +250,18 @@ static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
 		struct cifs_sb_info *cifs_sb,
 		const char *fullpath, const struct dfs_info3_param *ref)
 {
+	int len;
 	char *origin_unc;
 	struct vfsmount *mnt;
 	char *mountdata;
 	char *devname = NULL;
 
-	origin_unc = kmalloc(strlen(ref->path_name) + 2, GFP_KERNEL);
+	len = strlen(ref->path_name) + 2;
+
+	origin_unc = kmalloc(len, GFP_KERNEL);
 	if (!origin_unc)
 		return ERR_PTR(-ENOMEM);
-	strcpy(origin_unc, "\\");
-	strcat(origin_unc, ref->path_name);
+	snprintf(origin_unc, len, "\\%s", ref->path_name);
 
 	/* strip first '\' from fullpath */
 	mountdata = cifs_compose_mount_options(cifs_sb->mountdata,
@@ -386,10 +363,9 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 		if (!IS_ERR(mnt))
 			break;
 
-		rc = dfs_cache_invalidate_tgt(xid, ses, cifs_sb->local_nls,
-					      cifs_remap(cifs_sb),
-					      referral.path_name);
-
+		rc = dfs_cache_inval_tgt(xid, ses, cifs_sb->local_nls,
+					 cifs_remap(cifs_sb),
+					 referral.path_name, NULL);
 		free_dfs_info_param(&referral);
 
 		if (rc)
@@ -432,425 +408,6 @@ struct vfsmount *cifs_dfs_d_automount(struct path *path)
 			      cifs_dfs_mountpoint_expiry_timeout);
 	cifs_dbg(FYI, "leaving %s [ok]\n" , __func__);
 	return newmnt;
-}
-
-static inline void dump_tgts(const struct dfs_cache_entry *ce)
-{
-	int i;
-
-	cifs_dbg(FYI, "targets (num=%d):\n", ce->numtgts);
-	for (i = 0; i < ce->numtgts; i++) {
-		cifs_dbg(FYI, "  %s%s\n", ce->tgts[i],
-			 i == ce->tgthint ? " (target hint)" : "");
-	}
-}
-
-static inline void dump_dfs_cache(void)
-{
-	int i;
-
-	cifs_dbg(FYI, "DFS referral cache (nents=%d):\n", dfs_cache.numents);
-	for (i = 0; i < dfs_cache.numents; i++) {
-		struct dfs_cache_entry *ce = &dfs_cache.ents[i];
-		cifs_dbg(FYI, "prefix_path: %s\n", ce->prepath);
-		cifs_dbg(FYI, "ttl=%d,etime=%ld,target_type=%s,interlink=%s\n",
-			 ce->ttl, ce->etime.tv_nsec,
-			 ce->srv_type == DFS_TYPE_LINK ? "link" : "root",
-			 IS_INTERLINK_SET(ce->flags) ? "yes" : "no");
-		dump_tgts(ce);
-	}
-}
-
-void dfs_cache_init(void)
-{
-	if (unlikely(dfs_cache_initialized))
-		return;
-
-	mutex_init(&dfs_cache.lock);
-	dfs_cache_initialized = true;
-	cifs_dbg(FYI, "initialized DFS referral cache\n");
-}
-
-static inline void free_tgts(struct dfs_cache_entry *ce)
-{
-	int i;
-
-	for (i = 0; i < ce->numtgts; i++)
-		kfree(ce->tgts[i]);
-	ce->numtgts = 0;
-}
-
-void dfs_cache_destroy(void)
-{
-	int i;
-
-	if (unlikely(!dfs_cache_initialized))
-		return;
-
-	mutex_lock(&dfs_cache.lock);
-
-	for (i = 0; i < dfs_cache.numents; i++) {
-		struct dfs_cache_entry *ce = &dfs_cache.ents[i];
-		free_tgts(ce);
-		kfree(ce->prepath);
-	}
-
-	mutex_unlock(&dfs_cache.lock);
-	mutex_destroy(&dfs_cache.lock);
-
-	memset(&dfs_cache, 0, sizeof(dfs_cache));
-	dfs_cache_initialized = false;
-	cifs_dbg(FYI, "Destroyed DFS referral cache\n");
-}
-
-static inline struct timespec64 get_expire_time(int ttl)
-{
-	struct timespec64 ts = {
-		.tv_sec = ttl,
-		.tv_nsec = 0,
-	};
-	return timespec64_add(current_kernel_time64(), ts);
-}
-
-static inline int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
-				struct dfs_cache_entry *ce)
-{
-	int i;
-
-	if (unlikely(numrefs > DFS_CACHE_TGTS_MAX))
-		return -ENOMEM;
-
-	ce->ttl = refs[0].ttl;
-	ce->etime = get_expire_time(ce->ttl);
-	ce->srv_type = refs[0].server_type;
-	ce->flags = refs[0].ref_flag;
-
-	free_tgts(ce);
-
-	ce->tgthint = 0;
-
-	for (i = 0; i < numrefs; i++) {
-		const struct dfs_info3_param *ref = &refs[i];
-
-		ce->tgts[i] = kstrndup(ref->node_name, strlen(ref->node_name),
-				       GFP_KERNEL);
-		if (!ce->tgts[i]) {
-			free_tgts(ce);
-			return -ENOMEM;
-		}
-		ce->numtgts++;
-	}
-	return 0;
-}
-
-static int add_cache_entry(const char *path, const struct dfs_info3_param *refs,
-			   int numrefs)
-{
-	int rc;
-	struct dfs_cache_entry *ce;
-
-	cifs_dbg(FYI, "%s: path %s refs %p numrefs %d\n", __func__, path, refs,
-		 numrefs);
-
-	if (unlikely(dfs_cache.numents + 1 > DFS_CACHE_ENTS_MAX)) {
-		rc = -ENOMEM;
-		goto out;
-	}
-
-	ce = &dfs_cache.ents[dfs_cache.numents];
-	memset(ce, 0, sizeof(*ce));
-
-	rc = copy_ref_data(refs, numrefs, ce);
-	if (rc)
-		goto out;
-
-	ce->prepath = kstrndup(path, strlen(path), GFP_KERNEL);
-	if (!ce->prepath) {
-		rc = -ENOMEM;
-		goto out;
-	}
-
-	cifs_dbg(FYI, "%s: new cache entry: prepath=%s,ttl=%d,etime=%ld"
-		 "target_type=%s,interlink=%s\n",
-		 __func__, ce->prepath, ce->ttl, ce->etime.tv_nsec,
-		 ce->srv_type == DFS_TYPE_LINK ? "link" : "root",
-		 IS_INTERLINK_SET(ce->flags) ? "yes" : "no");
-	cifs_dbg(FYI, "%s: target hint: %s\n", __func__, ce->tgts[ce->tgthint]);
-
-	dfs_cache.numents++;
-	rc = 0;
-
-out:
-	cifs_dbg(FYI, "%s: rc = %d\n", __func__, rc);
-	return rc;
-}
-
-static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
-		     struct dfs_info3_param *ref)
-{
-	char *tgt;
-
-	cifs_dbg(FYI, "%s: set up new ref\n", __func__);
-
-	memset(ref, 0, sizeof(*ref));
-
-	ref->path_name = kstrndup(path, strlen(path), GFP_KERNEL);
-	if (!ref->path_name)
-		return -ENOMEM;
-
-	ref->path_consumed = strlen(path);
-
-	tgt = ce->tgts[ce->tgthint];
-
-	ref->node_name = kstrndup(tgt, strlen(tgt), GFP_KERNEL);
-	if (!ref->node_name)
-		return -ENOMEM;
-
-	ref->ttl = ce->ttl;
-	ref->server_type = ce->srv_type;
-	ref->ref_flag = ce->flags;
-
-	return 0;
-}
-
-static inline int __update_cache_lru(int index)
-{
-	int i;
-	struct dfs_cache_entry tmp;
-
-	if (likely(index == dfs_cache.numents - 1))
-		return index;
-
-	memcpy(&tmp, &dfs_cache.ents[index], sizeof(tmp));
-	for (i = index; i < dfs_cache.numents - 1; i++) {
-		memcpy(&dfs_cache.ents[i], &dfs_cache.ents[i + 1],
-		       sizeof(dfs_cache.ents[i]));
-	}
-	memcpy(&dfs_cache.ents[i], &tmp, sizeof(dfs_cache.ents[i]));
-	return i;
-}
-
-static inline struct dfs_cache_entry *find_cache_entry(const char *path)
-{
-	int i;
-
-	for (i = dfs_cache.numents - 1; i >= 0; i--) {
-		if (!strcasecmp(dfs_cache.ents[i].prepath, path)) {
-			i = __update_cache_lru(i);
-			break;
-		}
-	}
-	return i >= 0 ? &dfs_cache.ents[i] : ERR_PTR(-ENOENT);
-}
-
-static struct dfs_cache_entry *do_update_cache_entry(const char *path,
-						     const struct dfs_info3_param *refs,
-						     int numrefs)
-{
-	int rc;
-	struct dfs_cache_entry *ce;
-
-	ce = find_cache_entry(path);
-	if (IS_ERR(ce))
-		return ce;
-	rc = copy_ref_data(refs, numrefs, ce);
-	if (rc)
-		ce = ERR_PTR(rc);
-	return ce;
-}
-
-static struct dfs_cache_entry *get_updated_cache_entry(const unsigned int xid,
-						       struct cifs_ses *ses,
-						       const struct nls_table *nls_codepage,
-						       int remap,
-						       const char *path,
-						       struct dfs_cache_entry *ce)
-{
-	int rc;
-	struct dfs_info3_param *refs = NULL;
-	int numrefs = 0;
-
-	cifs_dbg(FYI, "%s: DFS referral request for %s\n", __func__,
-		 path);
-
-	if (!ses || !ses->server || !ses->server->ops->get_dfs_refer)
-		return ERR_PTR(-ENOSYS);
-	if (unlikely(!nls_codepage))
-		return ERR_PTR(-EINVAL);
-
-	rc = ses->server->ops->get_dfs_refer(xid, ses, path, &refs, &numrefs,
-					     nls_codepage, remap);
-	if (rc)
-		ce = ERR_PTR(rc);
-	else
-		ce = do_update_cache_entry(path, refs, numrefs);
-
-	free_dfs_info_array(refs, numrefs);
-	return ce;
-}
-
-static inline bool is_sysvol_or_netlogon(const char *path)
-{
-	const char *s;
-
-	s = strchr(path + 1, '\\') + 1;
-	return !strncasecmp(s, "sysvol", strlen("sysvol")) ||
-		!strncasecmp(s, "netlogon", strlen("netlogon"));
-}
-
-static struct dfs_cache_entry *__dfs_cache_find(const unsigned int xid,
-						struct cifs_ses *ses,
-						const struct nls_table *nls_codepage,
-						int remap, const char *path)
-{
-	int rc;
-	struct timespec64 ts;
-	bool interlink;
-	struct dfs_cache_entry *ce;
-	struct dfs_info3_param *nrefs;
-	int numnrefs;
-
-	for (;;) {
-		cifs_dbg(FYI, "%s: search path: %s\n", __func__, path);
-
-		ce = find_cache_entry(path);
-		if (IS_ERR(ce)) {
-			if (!ses || !ses->server ||
-			    !ses->server->ops->get_dfs_refer) {
-				ce = ERR_PTR(-ENOSYS);
-				break;
-			}
-			if (unlikely(!nls_codepage)) {
-				ce = ERR_PTR(-EINVAL);
-				break;
-			}
-			rc = ses->server->ops->get_dfs_refer(xid, ses, path,
-							     &nrefs, &numnrefs,
-							     nls_codepage,
-							     remap);
-			if (rc) {
-				ce = ERR_PTR(rc);
-				break;
-			}
-
-			rc = add_cache_entry(path, nrefs, numnrefs);
-			free_dfs_info_array(nrefs, numnrefs);
-
-			if (rc) {
-				ce = ERR_PTR(rc);
-				break;
-			}
-
-			ce = find_cache_entry(path);
-			if (IS_ERR(ce))
-				break;
-		}
-
-		interlink = IS_INTERLINK_SET(ce->flags);
-
-		cifs_dbg(FYI, "%s: cache entry: prepath=%s,ttl=%d,etime=%ld,"
-			 "interlink=%s\n", __func__, ce->prepath, ce->ttl,
-			 ce->etime.tv_nsec, interlink ? "yes" : "no");
-
-		ts = current_kernel_time64();
-		cifs_dbg(FYI, "%s: ctime %ld\n", __func__, ts.tv_nsec);
-		if (timespec64_compare(&ts, &ce->etime) >= 0) {
-			cifs_dbg(FYI, "%s: expired TTL\n", __func__);
-			ce = get_updated_cache_entry(xid, ses, nls_codepage,
-						     remap, path, ce);
-			if (IS_ERR(ce)) {
-				cifs_dbg(FYI, "%s: failed to update expired entry\n",
-					 __func__);
-				break;
-			}
-			interlink = IS_INTERLINK_SET(ce->flags);
-		}
-
-		if (ce->srv_type == DFS_TYPE_ROOT ||
-		    is_sysvol_or_netlogon(path) || !interlink)
-			break;
-		path = ce->tgts[ce->tgthint];
-	}
-
-	return ce;
-}
-
-int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-		   const struct nls_table *nls_codepage, int remap,
-		   const char *path, struct dfs_info3_param *ref)
-{
-	int rc;
-	struct dfs_cache_entry *ce;
-
-	if (!path)
-		return -EINVAL;
-	if (unlikely(!dfs_cache_initialized))
-		return -EINVAL;
-	if (unlikely(!strchr(path + 1, '\\')))
-		return -EINVAL;
-
-	mutex_lock(&dfs_cache.lock);
-#ifdef CONFIG_CIFS_DEBUG2
-	dump_dfs_cache();
-#endif
-	ce = __dfs_cache_find(xid, ses, nls_codepage, remap, path);
-	if (!IS_ERR(ce))
-		rc = setup_ref(path, ce, ref);
-	else
-		rc = PTR_ERR(ce);
-	mutex_unlock(&dfs_cache.lock);
-
-	cifs_dbg(FYI, "%s: rc = %d\n", __func__, rc);
-	return rc;
-}
-
-int dfs_cache_invalidate_tgt(const unsigned int xid, struct cifs_ses *ses,
-			     const struct nls_table *nls_codepage, int remap,
-			     const char *tree)
-{
-
-	struct dfs_cache_entry *ce;
-	int rc;
-	char *s;
-
-	if (!tree)
-		return -EINVAL;
-	if (unlikely(!strchr(tree + 1, '\\')))
-		return -EINVAL;
-	if (unlikely(!dfs_cache_initialized))
-		return -EINVAL;
-
-	cifs_dbg(FYI, "%s: tree name: %s\n", __func__, tree);
-
-	mutex_lock(&dfs_cache.lock);
-
-	ce = __dfs_cache_find(xid, ses, nls_codepage, remap, tree);
-	if (IS_ERR(ce)) {
-		rc = PTR_ERR(ce);
-		goto out;
-	}
-
-	cifs_dbg(FYI, "%s: cache entry: prepath=%s,ttl=%d,etime=%ld,"
-		 "interlink=%s\n", __func__, ce->prepath, ce->ttl,
-		 ce->etime.tv_nsec, IS_INTERLINK_SET(ce->flags) ? "yes" : "no");
-
-	if (ce->tgthint + 1 >= ce->numtgts) {
-		cifs_dbg(FYI, "%s: no targets left for client target failover\n",
-			 __func__);
-		rc = -ENOENT;
-		goto out;
-	}
-
-	s = ce->tgts[ce->tgthint];
-	cifs_dbg(FYI, "%s: current target: %s\n", __func__, s);
-
-	s = ce->tgts[++ce->tgthint];
-	cifs_dbg(FYI, "%s: next target: %s\n", __func__, s);
-	rc = 0;
-
-out:
-	mutex_unlock(&dfs_cache.lock);
-	return rc;
 }
 
 const struct inode_operations cifs_dfs_referral_inode_operations = {
