@@ -291,9 +291,10 @@ static inline struct dfs_cache_entry *find_cache_entry(unsigned int hash,
 	rcu_read_lock();
 	hlist_for_each_entry_rcu(ce, &dfs_cache_htable[hash], ce_hlist) {
 		if (!strncmp(ce->ce_path, path, strlen(path))) {
+			char *name = get_tgt_name(ce);
 			cifs_dbg(FYI, "%s: cache hit\n", __func__);
 			cifs_dbg(FYI, "%s: target hint: %s\n", __func__,
-				 get_tgt_name(ce));
+				 name ? name : "none");
 			found = true;
 			break;
 		}
@@ -309,7 +310,7 @@ static void free_cache_entry(struct rcu_head *rcu)
 	kmem_cache_free(dfs_cache_slab, ce);
 }
 
-static inline void flush_cache_ent(struct dfs_cache_entry *ce)
+static inline void __flush_cache_ent(struct dfs_cache_entry *ce)
 {
 	if (hlist_unhashed(&ce->ce_hlist))
 		return;
@@ -318,6 +319,13 @@ static inline void flush_cache_ent(struct dfs_cache_entry *ce)
 	kfree(ce->ce_path);
 	free_tgts(ce);
 	call_rcu(&ce->ce_rcu, free_cache_entry);
+}
+
+static inline void flush_cache_ent(struct dfs_cache_entry *ce)
+{
+	rcu_read_lock();
+	__flush_cache_ent(ce);
+	rcu_read_unlock();
 }
 
 static void flush_cache_ents(void)
@@ -330,7 +338,7 @@ static void flush_cache_ents(void)
 		struct dfs_cache_entry *ce;
 
 		hlist_for_each_entry_rcu(ce, l, ce_hlist)
-			flush_cache_ent(ce);
+			__flush_cache_ent(ce);
 	}
 	rcu_read_unlock();
 }
@@ -482,7 +490,6 @@ static struct dfs_cache_entry *__do_dfs_cache_find(const unsigned int xid,
 		interlink = IS_INTERLINK_SET(ce->ce_flags);
 
 		ts = current_kernel_time64();
-		cifs_dbg(FYI, "%s: ctime %ld\n", __func__, ts.tv_nsec);
 		if (timespec64_compare(&ts, &ce->ce_etime) >= 0) {
 			cifs_dbg(FYI, "%s: expired TTL\n", __func__);
 			ce = update_cache_entry(xid, ses, nls_codepage, remap,
@@ -493,11 +500,18 @@ static struct dfs_cache_entry *__do_dfs_cache_find(const unsigned int xid,
 				break;
 			}
 			interlink = IS_INTERLINK_SET(ce->ce_flags);
+		} else if (!ce->ce_tgthint) {
+			cifs_dbg(FYI, "%s: unexpired entry, but no target servers left\n",
+				 __func__);
+			flush_cache_ent(ce);
+			ce = ERR_PTR(-ENOENT);
+			break;
 		}
 
 		if (ce->ce_srvtype == DFS_TYPE_ROOT ||
 		    is_sysvol_or_netlogon(path) || !interlink)
 			break;
+
 		path = get_tgt_name(ce);
 	}
 	return ce;
