@@ -4002,30 +4002,27 @@ static int mount_inval_dfs_tgt(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-static int mount_setup_next_dfs_tgt(struct smb_vol *vol,
-				    struct TCP_Server_Info **nserver,
-				    struct cifs_ses **nses,
-				    struct cifs_tcon **ntcon)
+static struct cifs_tcon *mount_setup_next_tcon(struct smb_vol *vol,
+					       struct TCP_Server_Info **nserver,
+					       struct cifs_ses **nses,
+					       struct cifs_tcon *tcon)
 {
-	int rc;
 	struct TCP_Server_Info *server;
 	struct cifs_ses *ses;
-	struct cifs_tcon *tcon;
 
-	if (*ntcon)
-		cifs_put_tcon(*ntcon);
+	if (tcon)
+		cifs_put_tcon(tcon);
 	else if (*nses)
 		cifs_put_smb_ses(*nses);
+	else if (*nserver)
+		cifs_put_tcp_session(*nserver, 0);
 
 	*nserver = NULL;
 	*nses = NULL;
-	*ntcon = NULL;
 
 	server = cifs_get_tcp_session(vol);
-	if (IS_ERR(server)) {
-		rc = PTR_ERR(server);
-		goto err_get_tcp_ses;
-	}
+	if (IS_ERR(server))
+		return ERR_CAST(server);
 
 	if ((vol->max_credits < 20) || (vol->max_credits > 60000))
 		server->max_credits = SMB2_MAX_CREDITS_AVAILABLE;
@@ -4034,14 +4031,14 @@ static int mount_setup_next_dfs_tgt(struct smb_vol *vol,
 
 	ses = cifs_get_smb_ses(server, vol);
 	if (IS_ERR(ses)) {
-		rc = PTR_ERR(ses);
+		tcon = ERR_CAST(ses);
 		goto err_get_smb_ses;
 	}
 
 	if (vol->persistent == true &&
 	    !(ses->server->capabilities & SMB2_GLOBAL_CAP_PERSISTENT_HANDLES)) {
 		cifs_dbg(VFS, "persistent handles not supported by server\n");
-		rc = -EOPNOTSUPP;
+		tcon = ERR_PTR(-EOPNOTSUPP);
 		goto err_unsupp_phandle;
 	}
 
@@ -4049,15 +4046,14 @@ static int mount_setup_next_dfs_tgt(struct smb_vol *vol,
 
 	*nserver = server;
 	*nses = ses;
-	*ntcon = tcon;
 
-	return 0;
+	return tcon;
 
 err_unsupp_phandle:
+	cifs_put_smb_ses(ses);
 err_get_smb_ses:
 	cifs_put_tcp_session(server, 0);
-err_get_tcp_ses:
-	return rc;
+	return tcon;
 }
 #endif
 
@@ -4322,12 +4318,10 @@ remote_path_check:
 		if (rc)
 			goto mount_fail_check;
 
-		rc = mount_setup_next_dfs_tgt(&fake_vol, &server, &ses, &tcon);
+		tcon = mount_setup_next_tcon(&fake_vol, &server, &ses, tcon);
 		cleanup_volume_info_contents(&fake_vol);
 
-		if (!rc)
-			goto retry_next_tgt;
-		goto mount_fail_check;
+		goto retry_next_tgt;
 	}
 	/* If origin UNC path wasn't saved previously, then it means that we've
 	 * got a prefix path and DFS root was already resolved in last
