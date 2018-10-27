@@ -540,10 +540,14 @@ int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 
 	mutex_lock(&dfs_cache_lock);
 	ce = __do_dfs_cache_find(xid, ses, nls_codepage, remap, path);
-	if (!IS_ERR(ce))
-		rc = setup_ref(path, ce, ref);
-	else
+	if (!IS_ERR(ce)) {
+		if (ref)
+			rc = setup_ref(path, ce, ref);
+		else
+			rc = 0;
+	} else {
 		rc = PTR_ERR(ce);
+	}
 	mutex_unlock(&dfs_cache_lock);
 	return rc;
 }
