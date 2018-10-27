@@ -59,7 +59,6 @@ static struct kmem_cache *dfs_cache_slab __read_mostly;
 
 static DEFINE_MUTEX(dfs_cache_lock);
 static struct hlist_head dfs_cache_htable[DFS_CACHE_HTABLE_SIZE];
-static bool dfs_cache_initialized;
 
 #ifdef CONFIG_CIFS_DEBUG2
 static inline void dump_tgts(const struct dfs_cache_entry *ce)
@@ -114,9 +113,6 @@ int dfs_cache_init(void)
 {
 	int i;
 
-	if (unlikely(dfs_cache_initialized))
-		return -EALREADY;
-
 	dfs_cache_slab = kmem_cache_create("cifs_dfs_cache",
 					   sizeof(struct dfs_cache_entry), 0,
 					   SLAB_HWCACHE_ALIGN, NULL);
@@ -126,7 +122,6 @@ int dfs_cache_init(void)
 	for (i = 0; i < DFS_CACHE_HTABLE_SIZE; i++)
 		INIT_HLIST_HEAD(&dfs_cache_htable[i]);
 
-	dfs_cache_initialized = true;
 	cifs_dbg(FYI, "%s: Initialized DFS referral cache\n", __func__);
 	return 0;
 }
@@ -310,7 +305,7 @@ static void free_cache_entry(struct rcu_head *rcu)
 	kmem_cache_free(dfs_cache_slab, ce);
 }
 
-static inline void __flush_cache_ent(struct dfs_cache_entry *ce)
+static inline void flush_cache_ent(struct dfs_cache_entry *ce)
 {
 	if (hlist_unhashed(&ce->ce_hlist))
 		return;
@@ -319,13 +314,6 @@ static inline void __flush_cache_ent(struct dfs_cache_entry *ce)
 	kfree(ce->ce_path);
 	free_tgts(ce);
 	call_rcu(&ce->ce_rcu, free_cache_entry);
-}
-
-static inline void flush_cache_ent(struct dfs_cache_entry *ce)
-{
-	rcu_read_lock();
-	__flush_cache_ent(ce);
-	rcu_read_unlock();
 }
 
 static void flush_cache_ents(void)
@@ -338,7 +326,7 @@ static void flush_cache_ents(void)
 		struct dfs_cache_entry *ce;
 
 		hlist_for_each_entry_rcu(ce, l, ce_hlist)
-			__flush_cache_ent(ce);
+			flush_cache_ent(ce);
 	}
 	rcu_read_unlock();
 }
@@ -351,15 +339,10 @@ static inline void destroy_slab_cache(void)
 
 void dfs_cache_destroy(void)
 {
-	if (unlikely(!dfs_cache_initialized))
-		return;
-
 	mutex_lock(&dfs_cache_lock);
 	flush_cache_ents();
-	destroy_slab_cache();
 	mutex_unlock(&dfs_cache_lock);
-
-	dfs_cache_initialized = false;
+	destroy_slab_cache();
 	cifs_dbg(FYI, "%s: Destroyed DFS referral cache\n", __func__);
 }
 
@@ -552,11 +535,7 @@ int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	int rc;
 	struct dfs_cache_entry *ce;
 
-	if (!path)
-		return -EINVAL;
-	if (unlikely(!dfs_cache_initialized))
-		return -EINVAL;
-	if (unlikely(!strchr(path + 1, '\\')))
+	if (!path || unlikely(!strchr(path + 1, '\\')))
 		return -EINVAL;
 
 	mutex_lock(&dfs_cache_lock);
@@ -577,11 +556,7 @@ int __dfs_cache_inval_tgt(const unsigned int xid, struct cifs_ses *ses,
 	int rc;
 	char *t;
 
-	if (!tree)
-		return -EINVAL;
-	if (unlikely(!strchr(tree + 1, '\\')))
-		return -EINVAL;
-	if (unlikely(!dfs_cache_initialized))
+	if (!tree || unlikely(!strchr(tree + 1, '\\')))
 		return -EINVAL;
 
 	cifs_dbg(FYI, "%s: tree name: %s\n", __func__, tree);
