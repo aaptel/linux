@@ -1495,10 +1495,13 @@ init_cifs(void)
 		goto out_destroy_mids;
 
 #ifdef CONFIG_CIFS_UPCALL
-	rc = init_cifs_spnego();
+	rc = dfs_cache_init();
 	if (rc)
 		goto out_destroy_request_bufs;
-	dfs_cache_init();
+
+	rc = init_cifs_spnego();
+	if (rc)
+		goto out_destroy_dfs_cache;
 #endif /* CONFIG_CIFS_UPCALL */
 
 #ifdef CONFIG_CIFS_ACL
@@ -1526,6 +1529,8 @@ out_register_key_type:
 #endif
 #ifdef CONFIG_CIFS_UPCALL
 	exit_cifs_spnego();
+out_destroy_dfs_cache:
+	dfs_cache_destroy();
 out_destroy_request_bufs:
 #endif
 	cifs_destroy_request_bufs();
