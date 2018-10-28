@@ -92,6 +92,7 @@ build_path_from_dentry(struct dentry *direntry)
 char *
 build_path_from_dentry_optional_prefix(struct dentry *direntry, bool prefix)
 {
+	char *tree;
 	struct dentry *temp;
 	int namelen;
 	int dfsplen;
@@ -102,9 +103,11 @@ build_path_from_dentry_optional_prefix(struct dentry *direntry, bool prefix)
 	struct cifs_tcon *tcon = cifs_sb_master_tcon(cifs_sb);
 	unsigned seq;
 
+	tree = cifs_sb->origin_unc ? cifs_sb->origin_unc : tcon->treeName;
+
 	dirsep = CIFS_DIR_SEP(cifs_sb);
 	if (prefix)
-		dfsplen = strnlen(tcon->treeName, MAX_TREE_SIZE + 1);
+		dfsplen = strlen(tree);
 	else
 		dfsplen = 0;
 
@@ -181,7 +184,7 @@ cifs_bp_rename_retry:
 	}
 
 	if (dfsplen) {
-		strncpy(full_path, tcon->treeName, dfsplen);
+		strncpy(full_path, tree, dfsplen);
 		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS) {
 			int i;
 			for (i = 0; i < dfsplen; i++) {
