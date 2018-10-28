@@ -4331,7 +4331,6 @@ remote_path_check:
 			rc = -ENOMEM;
 			goto mount_fail_check;
 		}
-
 		rc = server->ops->is_path_accessible(xid, tcon, cifs_sb,
 						     full_path);
 		if (rc != 0 && rc != -EREMOTE) {
