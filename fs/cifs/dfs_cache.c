@@ -220,7 +220,8 @@ static int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
 			free_tgts(ce);
 			return PTR_ERR(t);
 		}
-		if (tgthint && !strncmp(t->t_name, tgthint, strlen(tgthint))) {
+		if (tgthint && !strncasecmp(t->t_name, tgthint,
+					    strlen(tgthint))) {
 			list_add(&t->t_list, &ce->ce_tlist);
 			tgthint = NULL;
 		} else {
@@ -286,7 +287,7 @@ static inline struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
 
 	rcu_read_lock();
 	hlist_for_each_entry_rcu(ce, &dfs_cache_htable[hash], ce_hlist) {
-		if (!strncmp(ce->ce_path, path, len)) {
+		if (!strncasecmp(ce->ce_path, path, len)) {
 			char *name = get_tgt_name(ce);
 			cifs_dbg(FYI, "%s: cache hit\n", __func__);
 			cifs_dbg(FYI, "%s: target hint: %s\n", __func__,
