@@ -3928,17 +3928,14 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 {
 	int rc;
 	struct dfs_info3_param referral = {0};
-	char *full_path = NULL, *ref_path = NULL, *mdata = NULL;
+	char *ref_path = NULL, *mdata = NULL;
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
 		return -EREMOTE;
 
-	full_path = build_unc_path_to_root(volume_info, cifs_sb, true);
-	if (IS_ERR(full_path))
-		return PTR_ERR(full_path);
-
 	/* For DFS paths, skip the first '\' of the UNC */
-	ref_path = check_prefix ? full_path + 1 : volume_info->UNC + 1;
+	ref_path = check_prefix ? cifs_sb->origin_unc + 1 :
+		volume_info->UNC + 1;
 
 	rc = get_dfs_path(xid, ses, ref_path, cifs_sb->local_nls, &referral,
 			  cifs_remap(cifs_sb));
@@ -3946,9 +3943,8 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		char *fake_devname = NULL;
 
 		mdata = cifs_compose_mount_options(cifs_sb->mountdata,
-						   full_path + 1, &referral,
-						   &fake_devname);
-
+						   cifs_sb->origin_unc + 1,
+						   &referral, &fake_devname);
 		free_dfs_info_param(&referral);
 
 		if (IS_ERR(mdata)) {
@@ -3963,7 +3959,6 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		kfree(cifs_sb->mountdata);
 		cifs_sb->mountdata = mdata;
 	}
-	kfree(full_path);
 	return rc;
 }
 
@@ -4272,31 +4267,26 @@ remote_path_check:
 	 * Chase the referral if found, otherwise continue normally.
 	 */
 	if (referral_walks_count == 0) {
-		/*
-		 * If there is no prefix path, we're mounting a DFS root, so
-		 * save its UNC path for reconnection.
-		 */
-		if (!volume_info->prepath) {
+		if (!cifs_sb->origin_unc) {
 			cifs_sb->origin_unc = build_unc_path_to_root(volume_info,
 								     cifs_sb,
-								     false);
+								     true);
 			if (!cifs_sb->origin_unc) {
 				rc = -ENOMEM;
 				goto mount_fail_check;
 			}
 			cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__,
 				 cifs_sb->origin_unc);
-		} else {
-			/*
-			 * Save root tree name for retrying the next available
-			 * target server from DFS referral cache in case we
-			 * failed to connect to the first one.
-			 */
-			root_tree = build_unc_path_to_root(volume_info, cifs_sb,
-							   false);
-			if (!root_tree)
-				goto mount_fail_check;
 		}
+		/*
+		 * Save root tree name for retrying the next available
+		 * target server from DFS referral cache in case we
+		 * failed to connect to the first one.
+		 */
+		root_tree = build_unc_path_to_root(volume_info, cifs_sb, false);
+		if (!root_tree)
+			goto mount_fail_check;
+
 		refrc = expand_dfs_referral(xid, ses, volume_info, cifs_sb, 0);
 		if (!refrc) {
 			referral_walks_count++;
@@ -4308,7 +4298,7 @@ remote_path_check:
 		 * to DFS root, so root_tree should contain the last UNC path and
 		 * then we can retry next target server.
 		 */
-		if (cifs_sb->origin_unc)
+		if (referral_walks_count > 1)
 			tree = cifs_sb->origin_unc + 1;
 		else
 			tree = root_tree + 1;
@@ -4323,20 +4313,7 @@ remote_path_check:
 
 		goto retry_next_tgt;
 	}
-	/* If origin UNC path wasn't saved previously, then it means that we've
-	 * got a prefix path and DFS root was already resolved in last
-	 * expand_dfs_referral() call, thus save resolved target server + prefix
-	 * path to be used during reconnection.
-	 */
-	if (!cifs_sb->origin_unc && volume_info->prepath) {
-		cifs_sb->origin_unc = build_unc_path_to_root(volume_info,
-							     cifs_sb, true);
-		if (!cifs_sb->origin_unc) {
-			rc = -ENOMEM;
-			goto mount_fail_check;
-		}
-	}
-	cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__, cifs_sb->origin_unc);
+
 #endif
 
 	/* check if a whole path is not remote */
@@ -4354,6 +4331,7 @@ remote_path_check:
 			rc = -ENOMEM;
 			goto mount_fail_check;
 		}
+
 		rc = server->ops->is_path_accessible(xid, tcon, cifs_sb,
 						     full_path);
 		if (rc != 0 && rc != -EREMOTE) {
