@@ -382,31 +382,28 @@ static void reconn_setup_next_dfs_tgt(struct TCP_Server_Info *server)
 
 	rc = dfs_cache_noreq_inval_tgt(path, &ref);
 	if (rc) {
-		cifs_dbg(FYI, "%s: no targets left for client failover\n",
+		cifs_dbg(VFS, "%s: no targets left for client failover\n",
 			 __func__);
 		return;
 	}
-
-	cifs_dbg(FYI, "%s: next target: %s\n", __func__, ref.node_name);
 
 	kfree(server->hostname);
 
 	server->hostname = extract_hostname(ref.node_name);
 	if (!server->hostname) {
 		free_dfs_info_param(&ref);
-		cifs_dbg(VFS, "%s: failed to extract hostname from target: %d\n",
+		cifs_dbg(FYI, "%s: failed to extract hostname from target: %d\n",
 			 __func__, -ENOMEM);
 		return;
 	}
 
 	tcon = cifs_sb_master_tcon(cifs_sb);
 
+	spin_lock(&cifs_tcp_ses_lock);
 	snprintf(tcon->treeName, sizeof(tcon->treeName), "\\%s", ref.node_name);
+	spin_unlock(&cifs_tcp_ses_lock);
 
 	free_dfs_info_param(&ref);
-
-	cifs_dbg(FYI, "%s: new tcon->treeName: %s\n", __func__,
-		 tcon->treeName);
 
 	len = strlen(server->hostname) + 3;
 
