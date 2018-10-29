@@ -362,11 +362,11 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	 * refresh DFS referral cache.
 	 */
 	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
-			    root_path + 1, NULL);
+			    root_path + 1, NULL, NULL);
 	if (!rc) {
 		rc = dfs_cache_find(xid, ses, cifs_sb->local_nls,
 				    cifs_remap(cifs_sb), full_path + 1,
-				    &referral);
+				    &referral, NULL);
 	}
 
 	free_xid(xid);
