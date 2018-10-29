@@ -325,6 +325,8 @@ struct cifs_tcon *
 cifs_sb_master_tcon(struct cifs_sb_info *cifs_sb);
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
+atomic_t reconn_nr_dfs_tgts;
+
 struct super_cb_data {
 	struct TCP_Server_Info *server;
 	struct cifs_sb_info *cifs_sb;
@@ -360,10 +362,10 @@ static inline struct cifs_sb_info *find_super_by_tcp(struct TCP_Server_Info *ser
 	return d.cifs_sb;
 }
 
-/* assuming it's called with server->srv_mutex lock held */
-static void reconn_setup_next_dfs_tgt(struct TCP_Server_Info *server)
+/* must be called with server->srv_mutex held */
+static void reconn_setup_next_dfs_tgt(struct TCP_Server_Info *server,
+				      struct cifs_sb_info *cifs_sb)
 {
-	struct cifs_sb_info *cifs_sb;
 	struct cifs_tcon *tcon;
 	char *path;
 	int rc;
@@ -372,9 +374,11 @@ static void reconn_setup_next_dfs_tgt(struct TCP_Server_Info *server)
 	char *unc;
 	int len;
 
-	cifs_sb = find_super_by_tcp(server);
-	if (IS_ERR(cifs_sb))
+	if (!atomic_add_unless(&reconn_nr_dfs_tgts, -1, 0)) {
+		cifs_dbg(VFS, "%s: no DFS targets left for reconnect\n",
+			 __func__);
 		return;
+	}
 
 	cifs_dbg(FYI, "%s: origin UNC: %s\n", __func__, cifs_sb->origin_unc);
 
@@ -382,8 +386,8 @@ static void reconn_setup_next_dfs_tgt(struct TCP_Server_Info *server)
 
 	rc = dfs_cache_noreq_inval_tgt(path, &ref);
 	if (rc) {
-		cifs_dbg(VFS, "%s: no targets left for client failover\n",
-			 __func__);
+		cifs_dbg(FYI, "%s: failed to get next target server: %d\n",
+			 __func__, rc);
 		return;
 	}
 
@@ -434,7 +438,8 @@ static void reconn_setup_next_dfs_tgt(struct TCP_Server_Info *server)
 	}
 }
 #else
-static inline void reconn_setup_next_dfs_tgt(struct TCP_Server_Info *server)
+static inline void reconn_setup_next_dfs_tgt(struct TCP_Server_Info *server,
+					     struct cifs_sb_info *cifs_sb)
 {
 }
 #endif
@@ -456,6 +461,10 @@ cifs_reconnect(struct TCP_Server_Info *server)
 	struct cifs_tcon *tcon;
 	struct mid_q_entry *mid_entry;
 	struct list_head retry_list;
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	struct cifs_sb_info *cifs_sb;
+	int numtgts;
+#endif
 
 	spin_lock(&GlobalMid_Lock);
 	if (server->tcpStatus == CifsExiting) {
@@ -519,6 +528,14 @@ cifs_reconnect(struct TCP_Server_Info *server)
 		list_move(&mid_entry->qhead, &retry_list);
 	}
 	spin_unlock(&GlobalMid_Lock);
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	numtgts = 0;
+
+	cifs_sb = find_super_by_tcp(server);
+	if (!IS_ERR(cifs_sb))
+		dfs_cache_noreq_find(cifs_sb->origin_unc + 1, NULL, &numtgts);
+	atomic_set(&reconn_nr_dfs_tgts, numtgts);
+#endif
 	mutex_unlock(&server->srv_mutex);
 
 	cifs_dbg(FYI, "%s: issuing mid callbacks\n", __func__);
@@ -531,16 +548,20 @@ cifs_reconnect(struct TCP_Server_Info *server)
 	do {
 		try_to_freeze();
 
-		/* we should try only the port we connected to before */
 		mutex_lock(&server->srv_mutex);
+		/*
+		 * Set up next DFS target server (if any) for reconnect. If DFS
+		 * feature is disabled, then we will retry last server we
+		 * connetecd to before.
+		 */
+		reconn_setup_next_dfs_tgt(server, cifs_sb);
+
 		if (cifs_rdma_enabled(server))
 			rc = smbd_reconnect(server);
 		else
 			rc = generic_ip_connect(server);
 		if (rc) {
 			cifs_dbg(FYI, "reconnect error %d\n", rc);
-			/* set up any other target server for client failover */
-			reconn_setup_next_dfs_tgt(server);
 			mutex_unlock(&server->srv_mutex);
 			msleep(3000);
 		} else {
@@ -3921,7 +3942,7 @@ build_unc_path_to_root(const struct smb_vol *vol,
 static int
 expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		    struct smb_vol *volume_info, struct cifs_sb_info *cifs_sb,
-		    int check_prefix)
+		    int check_prefix, int *numtgts)
 {
 	int rc;
 	struct dfs_info3_param referral = {0};
@@ -3935,7 +3956,7 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		volume_info->UNC + 1;
 
 	rc = get_dfs_path(xid, ses, ref_path, cifs_sb->local_nls, &referral,
-			  cifs_remap(cifs_sb));
+			  numtgts, cifs_remap(cifs_sb));
 	if (!rc) {
 		char *fake_devname = NULL;
 
@@ -4160,6 +4181,7 @@ cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
 	int refrc;
 	char *root_tree = NULL, *tree;
 	struct smb_vol fake_vol = {0};
+	int nr_root_tgts = 0, nr_link_tgts = 0;
 #endif
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
@@ -4286,21 +4308,32 @@ remote_path_check:
 		if (!root_tree)
 			goto mount_fail_check;
 
-		refrc = expand_dfs_referral(xid, ses, volume_info, cifs_sb, 0);
+		refrc = expand_dfs_referral(xid, ses, volume_info, cifs_sb, 0,
+					    &nr_root_tgts);
 		if (!refrc) {
 			referral_walks_count++;
 			goto try_mount_again;
 		}
 	} else if (rc && rc != -EREMOTE) {
+		int tgts_left;
+
 		/*
 		 * If cifs_sb->origin_unc wasn't set, then we failed to connect
 		 * to DFS root, so root_tree should contain the last UNC path and
 		 * then we can retry next target server.
 		 */
-		if (referral_walks_count > 1)
+		if (referral_walks_count > 1) {
 			tree = cifs_sb->origin_unc + 1;
-		else
+			tgts_left = --nr_link_tgts;
+		} else {
 			tree = root_tree + 1;
+			tgts_left = --nr_root_tgts;
+		}
+
+		if (tgts_left <= 0) {
+			rc = -EHOSTDOWN;
+			goto mount_fail_check;
+		}
 
 		rc = mount_inval_dfs_tgt(xid, ses, volume_info, cifs_sb, tree,
 					 &fake_vol);
@@ -4365,7 +4398,13 @@ remote_path_check:
 			goto mount_fail_check;
 		}
 
-		rc = expand_dfs_referral(xid, ses, volume_info, cifs_sb, 1);
+		if (!nr_link_tgts) {
+			rc = expand_dfs_referral(xid, ses, volume_info, cifs_sb,
+						 1, &nr_link_tgts);
+		} else {
+			rc = expand_dfs_referral(xid, ses, volume_info, cifs_sb,
+						 1, NULL);
+		}
 
 		if (!rc) {
 			referral_walks_count++;

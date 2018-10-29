@@ -932,7 +932,7 @@ cifs_unix_dfs_readlink(const unsigned int xid, struct cifs_tcon *tcon,
 	struct dfs_info3_param referral = {0};
 
 	rc = get_dfs_path(xid, tcon->ses, searchName, nls_codepage, &referral,
-			  false);
+			  NULL, 0);
 
 	if (!rc) {
 		*symlinkinfo = kstrndup(referral.node_name,

@@ -56,6 +56,7 @@ struct dfs_cache_entry {
 	int ce_flags;
 	struct timespec64 ce_etime;
 	int ce_path_consumed;
+	int ce_numtgts;
 	struct list_head ce_tlist;
 	struct dfs_cache_tgt *ce_tgthint;
 	struct rcu_head ce_rcu;
@@ -80,8 +81,9 @@ static inline void dump_tgts(const struct dfs_cache_entry *ce)
 
 static inline void dump_ce(const struct dfs_cache_entry *ce)
 {
-	cifs_dbg(FYI, "cache entry: path=%s,ttl=%d,etime=%ld,"
-		 "interlink=%s,path_consumed=%d\n", ce->ce_path, ce->ce_ttl,
+	cifs_dbg(FYI, "cache entry: path=%s,type=%s,ttl=%d,etime=%ld,"
+		 "interlink=%s,path_consumed=%d\n", ce->ce_path,
+		 ce->ce_srvtype == DFS_TYPE_ROOT ? "root" : "link", ce->ce_ttl,
 		 ce->ce_etime.tv_nsec,
 		 IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no",
 		 ce->ce_path_consumed);
@@ -152,22 +154,24 @@ static inline bool is_sysvol_or_netlogon(const char *path)
 static inline char *get_tgt_name(const struct dfs_cache_entry *ce)
 {
 	struct dfs_cache_tgt *t = ce->ce_tgthint;
-	return t ? t->t_name : NULL;
+	return t ? t->t_name : ERR_PTR(-ENOENT);
 }
 
 static inline char *get_next_tgt_name(struct dfs_cache_entry *ce)
 {
-	struct dfs_cache_tgt *t, *n;
+	struct dfs_cache_tgt *t = ce->ce_tgthint;
 
-	t = ce->ce_tgthint;
-	if (!t)
-		return NULL;
-	if (list_is_last(&t->t_list, &ce->ce_tlist))
-		n = NULL;
-	else
-		n = list_next_entry(t, t_list);
-	ce->ce_tgthint = n;
-	return n ? n->t_name : NULL;
+	if (t) {
+		if (list_is_last(&t->t_list, &ce->ce_tlist)) {
+			t = list_first_entry_or_null(&ce->ce_tlist,
+						     struct dfs_cache_tgt,
+						     t_list);
+		} else {
+			t = list_next_entry(t, t_list);
+		}
+		ce->ce_tgthint = t;
+	}
+	return t ? t->t_name : ERR_PTR(-ENOENT);
 }
 
 static inline struct timespec64 get_expire_time(int ttl)
@@ -233,6 +237,7 @@ static int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
 		} else {
 			list_add_tail(&t->t_list, &ce->ce_tlist);
 		}
+		ce->ce_numtgts++;
 	}
 
 	ce->ce_tgthint = list_first_entry_or_null(&ce->ce_tlist,
@@ -294,10 +299,15 @@ static inline struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
 	rcu_read_lock();
 	hlist_for_each_entry_rcu(ce, &dfs_cache_htable[hash], ce_hlist) {
 		if (!strncasecmp(ce->ce_path, path, len)) {
+#ifdef CONFIG_CIFS_DEBUG2
 			char *name = get_tgt_name(ce);
+			if (unlikely(IS_ERR(name))) {
+				rcu_read_unlock();
+				return ERR_CAST(name);
+			}
 			cifs_dbg(FYI, "%s: cache hit\n", __func__);
-			cifs_dbg(FYI, "%s: target hint: %s\n", __func__,
-				 name ? name : "none");
+			cifs_dbg(FYI, "%s: target hint: %s\n", __func__, name);
+#endif
 			found = true;
 			break;
 		}
@@ -403,6 +413,7 @@ static inline struct dfs_cache_entry *__update_cache_entry(const char *path,
 	}
 
 	free_tgts(ce);
+	ce->ce_numtgts = 0;
 
 	rc = copy_ref_data(refs, numrefs, ce, th);
 	kfree(th);
@@ -517,12 +528,6 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 				break;
 			}
 			interlink = IS_INTERLINK_SET(ce->ce_flags);
-		} else if (!ce->ce_tgthint) {
-			cifs_dbg(FYI, "%s: unexpired entry, but no target servers left\n",
-				 __func__);
-			flush_cache_ent(ce);
-			ce = ERR_PTR(-ENOENT);
-			break;
 		}
 
 		if (ce->ce_srvtype == DFS_TYPE_ROOT ||
@@ -530,6 +535,10 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 			break;
 
 		path = get_tgt_name(ce);
+		if (unlikely(IS_ERR(path))) {
+			ce = ERR_CAST(path);
+			break;
+		}
 	}
 	return ce;
 }
@@ -537,6 +546,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
 		     struct dfs_info3_param *ref)
 {
+	int rc;
 	char *tgt;
 
 	cifs_dbg(FYI, "%s: set up new ref\n", __func__);
@@ -550,21 +560,33 @@ static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
 	ref->path_consumed = ce->ce_path_consumed;
 
 	tgt = get_tgt_name(ce);
+	if (unlikely(IS_ERR(tgt))) {
+		rc = PTR_ERR(tgt);
+		goto err_free_path;
+	}
 
 	ref->node_name = kstrndup(tgt, strlen(tgt), GFP_KERNEL);
-	if (!ref->node_name)
-		return -ENOMEM;
+	if (!ref->node_name) {
+		rc = -ENOMEM;
+		goto err_free_path;
+	}
 
 	ref->ttl = ce->ce_ttl;
 	ref->server_type = ce->ce_srvtype;
 	ref->ref_flag = ce->ce_flags;
 
 	return 0;
+
+err_free_path:
+	kfree(ref->path_name);
+	ref->path_name = NULL;
+	return rc;
 }
 
 int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		     const struct nls_table *nls_codepage, int remap,
-		     const char *path, struct dfs_info3_param *ref)
+		     const char *path, struct dfs_info3_param *ref,
+		     int *numtgts)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -579,6 +601,8 @@ int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 			rc = setup_ref(path, ce, ref);
 		else
 			rc = 0;
+		if (!rc && numtgts)
+			*numtgts = ce->ce_numtgts;
 	} else {
 		rc = PTR_ERR(ce);
 	}
@@ -607,20 +631,18 @@ int __dfs_cache_inval_tgt(const unsigned int xid, struct cifs_ses *ses,
 		goto out;
 	}
 
-	cifs_dbg(FYI, "%s: current target: %s\n", __func__, get_tgt_name(ce));
-
 	t = get_next_tgt_name(ce);
-	if (!t) {
-		rc = -ENOENT;
-		cifs_dbg(FYI, "%s: no targets left for invalidation\n",
-			 __func__);
-	} else  {
-		cifs_dbg(FYI, "%s: next target: %s\n", __func__, t);
-		rc = 0;
+	if (unlikely(IS_ERR(t))) {
+		rc = PTR_ERR(t);
+		goto out;
 	}
 
-	if (!rc && ref)
+	cifs_dbg(FYI, "%s: next target: %s\n", __func__, t);
+
+	if (ref)
 		rc = setup_ref(tree, ce, ref);
+	else
+		rc = 0;
 
 out:
 	mutex_unlock(&dfs_cache_lock);

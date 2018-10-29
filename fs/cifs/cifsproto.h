@@ -561,10 +561,11 @@ extern void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
 static inline int get_dfs_path(const unsigned int xid, struct cifs_ses *ses,
 			       const char *old_path,
 			       const struct nls_table *nls_codepage,
-			       struct dfs_info3_param *referral, int remap)
+			       struct dfs_info3_param *referral, int *numtgts,
+			       int remap)
 {
 	return dfs_cache_find(xid, ses, nls_codepage, remap, old_path,
-			      referral);
+			      referral, numtgts);
 }
 
 #endif			/* _CIFSPROTO_H */
