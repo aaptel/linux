@@ -19,7 +19,6 @@
 
 #include <linux/rcupdate.h>
 #include <linux/rculist.h>
-#include <linux/shrinker.h>
 #include <linux/jhash.h>
 #include <linux/ktime.h>
 #include <linux/slab.h>
@@ -31,6 +30,13 @@
 #include "cifs_debug.h"
 #include "cifs_unicode.h"
 #include "smb2glob.h"
+
+#include "dfs_cache.h"
+
+/*
+ * TODO: add LRU (probably from linux/list_lru.h) to limit number of DFS cache
+ * entries.
+ */
 
 #define DFS_CACHE_HTABLE_SIZE 32
 
