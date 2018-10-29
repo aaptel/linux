@@ -4220,7 +4220,9 @@ try_mount_again:
 
 	/* search for existing tcon to this server share */
 	tcon = cifs_get_tcon(ses, volume_info);
+#ifdef CONFIG_CIFS_DFS_UPCALL
 retry_next_tgt:
+#endif
 	if (IS_ERR(tcon)) {
 		rc = PTR_ERR(tcon);
 		tcon = NULL;
