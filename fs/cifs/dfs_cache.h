@@ -48,6 +48,7 @@ struct dfs_cache_tgt_iterator {
 
 int dfs_cache_init(void);
 void dfs_cache_destroy(void);
+extern const struct file_operations dfscache_proc_fops;
 
 int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		     const struct nls_table *nls_codepage, int remap,
