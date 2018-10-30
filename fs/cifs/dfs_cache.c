@@ -67,6 +67,79 @@ static struct kmem_cache *dfs_cache_slab __read_mostly;
 static DEFINE_MUTEX(dfs_cache_lock);
 static struct hlist_head dfs_cache_htable[DFS_CACHE_HTABLE_SIZE];
 
+/*
+ * dfs cache /proc file
+ */
+static int dfscache_proc_show(struct seq_file *m, void *v)
+{
+	int bucket;
+	struct dfs_cache_entry *ce;
+	struct dfs_cache_tgt *t;
+	cifs_dbg(VFS, "XXX in proc read");
+	seq_puts(m, "DFS cache\n---------\n");
+
+	rcu_read_lock();
+	hash_for_each_rcu(dfs_cache_htable, bucket, ce, ce_hlist) {
+		seq_printf(m,
+			   "cache entry: path=%s,type=%s,ttl=%d,etime=%ld,"
+			   "interlink=%s,path_consumed=%d\n",
+			   ce->ce_path,
+			   ce->ce_srvtype == DFS_TYPE_ROOT ? "root" : "link", ce->ce_ttl,
+			   ce->ce_etime.tv_nsec,
+			   IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no",
+			   ce->ce_path_consumed);
+
+		list_for_each_entry(t, &ce->ce_tlist, t_list) {
+			seq_printf(m, "  %s%s\n",
+				   t->t_name,
+				   ce->ce_tgthint == t ? " (target hint)" : "");
+		}
+
+	}
+	rcu_read_unlock();
+	return 0;
+}
+
+static void flush_cache_ents(void);
+
+static ssize_t dfscache_proc_write(struct file *file, const char __user *buffer,
+		size_t count, loff_t *ppos)
+{
+	char c[2] = {0};
+	int rc;
+	cifs_dbg(VFS, "XXX in proc write");
+	rc = get_user(c[0], buffer);
+	if (rc) {
+		cifs_dbg(FYI, "rc=%d", rc);
+		return rc;
+	}
+
+	if (c[0] != '0') {
+		cifs_dbg(FYI, "rc=EINVAL");
+		return -EINVAL;
+	}
+
+	cifs_dbg(FYI, "clearing dfs cache");
+	mutex_lock(&dfs_cache_lock);
+	flush_cache_ents();
+	mutex_unlock(&dfs_cache_lock);
+
+	return count;
+}
+
+static int dfscache_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, dfscache_proc_show, NULL);
+}
+
+const struct file_operations dfscache_proc_fops = {
+	.open		= dfscache_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= dfscache_proc_write,
+};
+
 #ifdef CONFIG_CIFS_DEBUG2
 static inline void dump_tgts(const struct dfs_cache_entry *ce)
 {
