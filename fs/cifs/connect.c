@@ -532,6 +532,10 @@ cifs_reconnect(struct TCP_Server_Info *server)
 	numtgts = 0;
 
 	cifs_sb = find_super_by_tcp(server);
+	/*
+	 * NOTE: do not exclude the target we were disconnected from - though
+	 * it will the last one to be retried in target list.
+	 */
 	if (!IS_ERR(cifs_sb))
 		dfs_cache_noreq_find(cifs_sb->origin_unc + 1, NULL, &numtgts);
 	atomic_set(&reconn_nr_dfs_tgts, numtgts);
@@ -552,7 +556,7 @@ cifs_reconnect(struct TCP_Server_Info *server)
 		/*
 		 * Set up next DFS target server (if any) for reconnect. If DFS
 		 * feature is disabled, then we will retry last server we
-		 * connetecd to before.
+		 * connected to before.
 		 */
 		reconn_setup_next_dfs_tgt(server, cifs_sb);
 
