@@ -74,5 +74,6 @@ struct cifs_sb_info {
 	struct rcu_head rcu;
 	char *prepath;
 	char *origin_unc;
+	char *origin_fullpath;
 };
 #endif				/* _CIFS_FS_SB_H */

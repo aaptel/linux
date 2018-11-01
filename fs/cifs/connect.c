@@ -60,6 +60,8 @@
 #include "cifsfs.h"
 #include "dfs_cache.h"
 
+#define __pl() do { cifs_dbg(FYI, "%s:%d here\n", __func__, __LINE__); } while (0)
+
 extern mempool_t *cifs_req_poolp;
 extern bool disable_legacy_dialects;
 
@@ -3950,6 +3952,29 @@ build_unc_path_to_root(const struct smb_vol *vol,
 	return full_path;
 }
 
+static char *get_full_path(struct cifs_sb_info *cifs_sb, struct smb_vol *vol,
+			   int check_prefix)
+{
+	char *s;
+	int len;
+	int ret;
+
+	len = strlen(cifs_sb->origin_unc);
+	if (check_prefix && vol->prepath)
+		len += strlen(cifs_sb->prepath) + 1;
+	len += 1;
+
+	s = kmalloc(len, GFP_KERNEL);
+	if (!s)
+		return ERR_PTR(-ENOMEM);
+	ret = snprintf(s, len, "%s", cifs_sb->origin_unc);
+	len -= ret;
+	if (check_prefix && vol->prepath)
+		snprintf(s + ret, len, "\\%s", vol->prepath);
+	cifs_dbg(FYI, "%s: full_path: %s\n", __func__, s);
+	return s;
+}
+
 /*
  * Perform a dfs referral query for a share and (optionally) prefix
  *
@@ -3963,7 +3988,7 @@ build_unc_path_to_root(const struct smb_vol *vol,
 static int
 expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		    struct smb_vol *volume_info, struct cifs_sb_info *cifs_sb,
-		    int check_prefix)
+		    int check_prefix, bool cache_check_ppath)
 {
 	int rc;
 	struct dfs_info3_param referral = {0};
@@ -3972,17 +3997,18 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
 		return -EREMOTE;
 
-	/* For DFS paths, skip the first '\' of the UNC */
-	ref_path = check_prefix ? cifs_sb->origin_unc + 1 :
-		volume_info->UNC + 1;
+	if (check_prefix)
+		ref_path = cifs_sb->origin_fullpath + 1;
+	else
+		ref_path = volume_info->UNC + 1;
 
-	rc = get_dfs_path(xid, ses, ref_path, cifs_sb->local_nls, &referral,
-			  cifs_remap(cifs_sb));
+	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
+			    ref_path, &referral, NULL, cache_check_ppath);
 	if (!rc) {
 		char *fake_devname = NULL;
 
 		mdata = cifs_compose_mount_options(cifs_sb->mountdata,
-						   cifs_sb->origin_unc + 1,
+						   cifs_sb->origin_fullpath + 1,
 						   &referral, &fake_devname);
 		free_dfs_info_param(&referral);
 
@@ -4223,12 +4249,12 @@ static int get_next_dfs_tgt(struct cifs_sb_info *cifs_sb,
 	return 0;
 }
 
-static int set_next_target_server(const char *tree,
-				  const struct dfs_cache_tgt_iterator *tgt_it,
-				  struct cifs_sb_info *cifs_sb,
-				  struct TCP_Server_Info **server,
-				  struct cifs_ses **ses,
-				  struct cifs_tcon **tcon)
+static int set_next_dfs_tgt(const char *tree,
+			    const struct dfs_cache_tgt_iterator *tgt_it,
+			    struct cifs_sb_info *cifs_sb,
+			    struct TCP_Server_Info **server,
+			    struct cifs_ses **ses,
+			    struct cifs_tcon **tcon)
 				  
 {
 	int rc;
@@ -4332,7 +4358,60 @@ static inline void put_conns(struct cifs_sb_info *cifs_sb,
 	cifs_sb->mnt_cifs_flags &= ~CIFS_MOUNT_POSIX_PATHS;
 }
 
-int __cifs_mount_dfs(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
+static int is_full_path_remote(struct cifs_sb_info *cifs_sb,
+			       struct smb_vol *vol,
+			       const unsigned int xid,
+			       struct TCP_Server_Info *server,
+			       struct cifs_tcon *tcon)
+{
+	int rc;
+	char *full_path;
+
+	if (!server->ops->is_path_accessible)
+		return -ENOSYS;
+
+	__pl();
+
+	/*
+	 * cifs_build_path_to_root works only when we have a valid tcon
+	 */
+	full_path = cifs_build_path_to_root(vol, cifs_sb, tcon,
+					    tcon->Flags & SMB_SHARE_IS_IN_DFS);
+	if (full_path == NULL)
+		return -ENOMEM;
+
+	cifs_dbg(FYI, "%s: full_path: %s\n", __func__, full_path);
+
+	rc = server->ops->is_path_accessible(xid, tcon, cifs_sb,
+					     full_path);
+	if (rc != 0 && rc != -EREMOTE) {
+		kfree(full_path);
+		return rc;
+	}
+
+	__pl();
+
+	if (rc != -EREMOTE) {
+		__pl();
+		rc = cifs_are_all_path_components_accessible(server, xid, tcon,
+							     cifs_sb,
+							     full_path);
+		__pl();
+		if (rc != 0) {
+			cifs_dbg(VFS, "cannot query dirs between root and final path, "
+				 "enabling CIFS_MOUNT_USE_PREFIX_PATH\n");
+			cifs_sb->mnt_cifs_flags |= CIFS_MOUNT_USE_PREFIX_PATH;
+			rc = 0;
+		}
+	}
+	__pl();
+
+	kfree(full_path);
+
+	return rc;
+}
+
+int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 {
 	int rc = 0;
 	unsigned int xid;
@@ -4350,20 +4429,21 @@ int __cifs_mount_dfs(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	if (rc == -EACCES)
 		goto error;
 
-	cifs_sb->origin_unc = build_unc_path_to_root(vol, cifs_sb, true);
+	cifs_sb->origin_unc = build_unc_path_to_root(vol, cifs_sb, false);
 	if (!cifs_sb->origin_unc) {
 		rc = -ENOMEM;
 		goto error;
 	}
 
-	/*
-	 * Perform an unconditional check for whether there are DFS
-	 * referrals for this path without prefix, to provide support
-	 * for DFS referrals from w2k8 servers which don't seem to respond
-	 * with PATH_NOT_COVERED to requests that include the prefix.
-	 * Chase the referral if found, otherwise continue normally.
-	 */
-	expand_dfs_referral(xid, ses, vol, cifs_sb, 0);
+	cifs_sb->origin_fullpath = build_unc_path_to_root(vol, cifs_sb, true);
+	if (!cifs_sb->origin_fullpath) {
+		rc = -ENOMEM;
+		goto error;
+	}
+
+	/* unconditional DFS root referral */ 
+	expand_dfs_referral(xid, ses, vol, cifs_sb, 0, false);
+
 	put_conns(cifs_sb, server, ses, tcon);
 	free_xid(xid);
 	xid = get_xid();
@@ -4380,8 +4460,8 @@ int __cifs_mount_dfs(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 			if (rc)
 				goto error;
 
-			rc = set_next_target_server(tree, tgt_it, cifs_sb,
-						    &server, &ses, &tcon);
+			rc = set_next_dfs_tgt(tree, tgt_it, cifs_sb, &server,
+					      &ses, &tcon);
 			if (!rc)
 				break;
 		}
@@ -4393,41 +4473,29 @@ int __cifs_mount_dfs(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		dfs_cache_free_tgts(&tgt_list);
 	}
 
-	if (vol->prepath) {
-		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, 1);
+	if (!vol->prepath)
+		goto out;
+	
+	for (;;) {
+		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, 1, false);
 		if (rc)
 			goto error;
 
 		put_conns(cifs_sb, server, ses, tcon);
 		free_xid(xid);
 		xid = get_xid();
+
 		rc = get_conns(vol, cifs_sb, xid, &server, &ses, &tcon);
+		if (!rc && tcon)
+			rc = is_full_path_remote(cifs_sb, vol, xid, server, tcon);
+		if (!rc || rc != -EREMOTE)
+			break;
 	}
 
-	if (rc) {
-		tree = cifs_sb->origin_unc + 1;
-		for (;;) {
-			if (rc == -EACCES)
-				goto error;
+	if (rc)
+		goto error;
 
-			rc = get_next_dfs_tgt(cifs_sb, tree, &tgt_list,
-					      &tgt_it);
-			if (rc)
-				goto error;
-
-			rc = set_next_target_server(tree, tgt_it, cifs_sb,
-						    &server, &ses, &tcon);
-			if (!rc)
-				break;
-		}
-		rc = dfs_cache_update_tgthint(xid, ses, cifs_sb->local_nls,
-					      cifs_remap(cifs_sb), tree,
-					      tgt_it);
-		if (rc)
-			goto error;
-		dfs_cache_free_tgts(&tgt_list);
-	}
-
+out:
 	free_xid(xid);
 		
 	/* now, hang the tcon off of the superblock */
@@ -4451,6 +4519,8 @@ int __cifs_mount_dfs(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	queue_delayed_work(cifsiod_wq, &cifs_sb->prune_tlinks,
 				TLINK_IDLE_EXPIRE);
 
+	dfs_cache_free_tgts(&tgt_list);
+
 	return 0;
 
 error:
@@ -4461,6 +4531,7 @@ error:
 		cifs_put_smb_ses(ses);
 	else if (server)
 		cifs_put_tcp_session(server, 0);
+	free_xid(xid);
 	return rc;
 }
 #endif
@@ -4488,7 +4559,7 @@ cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	if (1)
-		return __cifs_mount_dfs(cifs_sb, volume_info);
+		return __cifs_dfs_mount(cifs_sb, volume_info);
 try_mount_again:
 	/* cleanup activities if we're chasing a referral */
 	if (referral_walks_count) {
@@ -4793,7 +4864,7 @@ out:
 
 int cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
 {
-	return __cifs_mount_dfs(cifs_sb, volume_info);
+	return __cifs_dfs_mount(cifs_sb, volume_info);
 }
 
 /*
