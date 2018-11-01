@@ -564,7 +564,7 @@ static inline int get_dfs_path(const unsigned int xid, struct cifs_ses *ses,
 			       struct dfs_info3_param *referral, int remap)
 {
 	return dfs_cache_find(xid, ses, nls_codepage, remap, old_path,
-			      referral, NULL);
+			      referral, NULL, false);
 }
 
 #endif			/* _CIFSPROTO_H */

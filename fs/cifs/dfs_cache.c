@@ -300,13 +300,19 @@ static inline struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
 }
 
 static struct dfs_cache_entry *find_cache_entry(const char *path,
-						unsigned int *hash)
+						unsigned int *hash,
+						bool check_ppath)
 {
 	const char *s, *q;
 	int len;
 	struct dfs_cache_entry *ce;
 
 	len = strlen(path);
+
+	if (!check_ppath) {
+		*hash = cache_entry_hash(path, len);
+		return __find_cache_entry(*hash, path, len);
+	}
 
 	s = strchr(path + 1, '\\');
 	s = strchr(s + 1, '\\');
@@ -325,7 +331,7 @@ static struct dfs_cache_entry *find_cache_entry(const char *path,
 		if (!IS_ERR(ce))
 			break;
 		while (*q-- != '\\');
-	} while (q > s);
+	} while (q >= s);
 	return ce;
 }
 
@@ -379,14 +385,15 @@ void dfs_cache_destroy(void)
 
 static inline struct dfs_cache_entry *__update_cache_entry(const char *path,
 							   const struct dfs_info3_param *refs,
-							   int numrefs)
+							   int numrefs,
+							   bool check_ppath)
 {
 	int rc;
 	unsigned int h;
 	struct dfs_cache_entry *ce;
 	char *s, *th = NULL;
 
-	ce = find_cache_entry(path, &h);
+	ce = find_cache_entry(path, &h, check_ppath);
 	if (IS_ERR(ce))
 		return ce;
 
@@ -414,6 +421,7 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 						  const struct nls_table *nls_codepage,
 						  int remap,
 						  const char *path,
+						  bool check_ppath,
 						  struct dfs_cache_entry *ce)
 {
 	int rc;
@@ -434,7 +442,7 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 	if (rc)
 		ce = ERR_PTR(rc);
 	else
-		ce = __update_cache_entry(path, refs, numrefs);
+		ce = __update_cache_entry(path, refs, numrefs, check_ppath);
 
 	dump_refs(refs, numrefs);
 	free_dfs_info_array(refs, numrefs);
@@ -445,7 +453,8 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 						 struct cifs_ses *ses,
 						 const struct nls_table *nls_codepage,
-						 int remap, const char *path)
+						 int remap, const char *path,
+						 bool check_ppath)
 {
 	int rc;
 	unsigned int h;
@@ -458,7 +467,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 	for (;;) {
 		cifs_dbg(FYI, "%s: search path: %s\n", __func__, path);
 
-		ce = find_cache_entry(path, &h);
+		ce = find_cache_entry(path, &h, check_ppath);
 		if (IS_ERR(ce)) {
 			cifs_dbg(FYI, "%s: cache miss\n", __func__);
 
@@ -506,7 +515,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 		if (timespec64_compare(&ts, &ce->ce_etime) >= 0) {
 			cifs_dbg(FYI, "%s: expired TTL\n", __func__);
 			ce = update_cache_entry(xid, ses, nls_codepage, remap,
-						path, ce);
+						path, check_ppath, ce);
 			if (IS_ERR(ce)) {
 				cifs_dbg(FYI, "%s: failed to update expired entry\n",
 					 __func__);
@@ -603,7 +612,7 @@ err_free_it:
 int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		     const struct nls_table *nls_codepage, int remap,
 		     const char *path, struct dfs_info3_param *ref,
-		     struct list_head *tgt_list)
+		     struct list_head *tgt_list, bool check_ppath)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -612,7 +621,8 @@ int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		return -EINVAL;
 
 	mutex_lock(&dfs_cache_lock);
-	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path);
+	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path,
+			       check_ppath);
 	if (!IS_ERR(ce)) {
 		if (ref)
 			rc = setup_ref(path, ce, ref, get_tgt_name(ce));
@@ -645,7 +655,7 @@ int __dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
 
 	mutex_lock(&dfs_cache_lock);
 
-	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path);
+	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path, true);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
@@ -689,7 +699,7 @@ int dfs_cache_get_tgt_referral(const char *path,
 
 	mutex_lock(&dfs_cache_lock);
 
-	ce = find_cache_entry(path, &h);
+	ce = find_cache_entry(path, &h, true);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;

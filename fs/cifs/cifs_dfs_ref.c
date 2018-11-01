@@ -249,6 +249,7 @@ compose_mount_options_err:
  * @fullpath:		full path in UNC format
  * @ref:		server's referral
  */
+#if 1
 static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
 		struct cifs_sb_info *cifs_sb,
 		const char *fullpath, const struct dfs_info3_param *ref)
@@ -281,6 +282,29 @@ out:
 	kfree(mountdata);
 	return mnt;
 }
+#else
+static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
+					     struct cifs_sb_info *cifs_sb,
+					     const char *fullpath, const struct dfs_info3_param *ref)
+{
+	struct vfsmount *mnt;
+	char *mountdata;
+	char *devname = NULL;
+
+	/* strip first '\' from fullpath */
+	mountdata = cifs_compose_mount_options(cifs_sb->mountdata,
+					       fullpath + 1, ref, &devname);
+
+	if (IS_ERR(mountdata))
+		return (struct vfsmount *)mountdata;
+
+	mnt = vfs_submount(mntpt, &cifs_fs_type, devname, mountdata);
+	kfree(mountdata);
+	kfree(devname);
+	return mnt;
+
+}
+#endif
 
 static void dump_referral(const struct dfs_info3_param *ref)
 {
@@ -362,11 +386,11 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	 * refresh DFS referral cache.
 	 */
 	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
-			    root_path + 1, NULL, NULL);
+			    root_path + 1, NULL, NULL, true);
 	if (!rc) {
 		rc = dfs_cache_find(xid, ses, cifs_sb->local_nls,
 				    cifs_remap(cifs_sb), full_path + 1,
-				    &referral, NULL);
+				    &referral, NULL, true);
 	}
 
 	free_xid(xid);
