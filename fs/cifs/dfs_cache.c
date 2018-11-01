@@ -157,23 +157,6 @@ static inline char *get_tgt_name(const struct dfs_cache_entry *ce)
 	return t ? t->t_name : ERR_PTR(-ENOENT);
 }
 
-static inline char *get_next_tgt_name(struct dfs_cache_entry *ce)
-{
-	struct dfs_cache_tgt *t = ce->ce_tgthint;
-
-	if (t) {
-		if (list_is_last(&t->t_list, &ce->ce_tlist)) {
-			t = list_first_entry_or_null(&ce->ce_tlist,
-						     struct dfs_cache_tgt,
-						     t_list);
-		} else {
-			t = list_next_entry(t, t_list);
-		}
-		ce->ce_tgthint = t;
-	}
-	return t ? t->t_name : ERR_PTR(-ENOENT);
-}
-
 static inline struct timespec64 get_expire_time(int ttl)
 {
 	struct timespec64 ts = {
@@ -332,7 +315,9 @@ static struct dfs_cache_entry *find_cache_entry(const char *path,
 		return __find_cache_entry(*hash, path, len);
 	}
 
+	--s;
 	q = path + len - 1;
+
 	do {
 		len = q - path + 1;
 		*hash = cache_entry_hash(path, len);
@@ -544,10 +529,9 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 }
 
 static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
-		     struct dfs_info3_param *ref)
+		     struct dfs_info3_param *ref, const char *tgt)
 {
 	int rc;
-	char *tgt;
 
 	cifs_dbg(FYI, "%s: set up new ref\n", __func__);
 
@@ -558,12 +542,6 @@ static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
 		return -ENOMEM;
 
 	ref->path_consumed = ce->ce_path_consumed;
-
-	tgt = get_tgt_name(ce);
-	if (unlikely(IS_ERR(tgt))) {
-		rc = PTR_ERR(tgt);
-		goto err_free_path;
-	}
 
 	ref->node_name = kstrndup(tgt, strlen(tgt), GFP_KERNEL);
 	if (!ref->node_name) {
@@ -583,10 +561,49 @@ err_free_path:
 	return rc;
 }
 
+static int get_tgt_list(const struct dfs_cache_entry *ce,
+			struct list_head *head)
+{
+	int rc;
+	struct dfs_cache_tgt *t;
+	struct dfs_cache_tgt_iterator *it, *nit;
+
+	INIT_LIST_HEAD(head);
+
+	list_for_each_entry(t, &ce->ce_tlist, t_list) {
+		it = kzalloc(sizeof(*it), GFP_KERNEL);
+		if (!it) {
+			rc = -ENOMEM;
+			goto err_free_it;
+		}
+
+		it->it_name = kstrndup(t->t_name, strlen(t->t_name),
+				       GFP_KERNEL);
+		if (!it->it_name) {
+			rc = -ENOMEM;
+			goto err_free_it;
+		}
+
+		if (ce->ce_tgthint == t)
+			list_add(&it->it_list, head);
+		else
+			list_add_tail(&it->it_list, head);
+	}
+
+	return 0;
+
+err_free_it:
+	list_for_each_entry_safe(it, nit, head, it_list) {
+		kfree(it->it_name);
+		kfree(it);
+	}
+	return rc;
+}
+
 int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		     const struct nls_table *nls_codepage, int remap,
 		     const char *path, struct dfs_info3_param *ref,
-		     int *numtgts)
+		     struct list_head *tgt_list)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -598,11 +615,11 @@ int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path);
 	if (!IS_ERR(ce)) {
 		if (ref)
-			rc = setup_ref(path, ce, ref);
+			rc = setup_ref(path, ce, ref, get_tgt_name(ce));
 		else
 			rc = 0;
-		if (!rc && numtgts)
-			*numtgts = ce->ce_numtgts;
+		if (!rc && tgt_list)
+			rc = get_tgt_list(ce, tgt_list);
 	} else {
 		rc = PTR_ERR(ce);
 	}
@@ -610,39 +627,77 @@ int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-int __dfs_cache_inval_tgt(const unsigned int xid, struct cifs_ses *ses,
-			  const struct nls_table *nls_codepage, int remap,
-			  const char *tree, struct dfs_info3_param *ref)
+int __dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
+			       const struct nls_table *nls_codepage, int remap,
+			       const char *path,
+			       const struct dfs_cache_tgt_iterator *it)
 {
-	struct dfs_cache_entry *ce;
 	int rc;
-	char *t;
+	struct dfs_cache_entry *ce;
+	struct dfs_cache_tgt *t;
 
-	if (!tree || unlikely(!strchr(tree + 1, '\\')))
+	if (!path || unlikely(!strchr(path + 1, '\\')))
+		return -EINVAL;
+	if (!it)
 		return -EINVAL;
 
-	cifs_dbg(FYI, "%s: tree name: %s\n", __func__, tree);
+	cifs_dbg(FYI, "%s: path: %s\n", __func__, path);
 
 	mutex_lock(&dfs_cache_lock);
 
-	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, tree);
+	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
 	}
 
-	t = get_next_tgt_name(ce);
-	if (unlikely(IS_ERR(t))) {
-		rc = PTR_ERR(t);
+	rc = 0;
+
+	t = ce->ce_tgthint;
+
+	if (likely(!strncasecmp(it->it_name, t->t_name, strlen(t->t_name))))
+		goto out;
+
+	list_for_each_entry(t, &ce->ce_tlist, t_list) {
+		if (!strncasecmp(t->t_name, it->it_name, strlen(it->it_name))) {
+			ce->ce_tgthint = t;
+			cifs_dbg(FYI, "%s: new target hint: %s\n", __func__,
+				 it->it_name);
+			break;
+		}
+	}
+
+out:
+	mutex_unlock(&dfs_cache_lock);
+	return rc;
+}
+
+int dfs_cache_get_tgt_referral(const char *path,
+			       const struct dfs_cache_tgt_iterator *it,
+			       struct dfs_info3_param *ref)
+{
+	int rc;
+	struct dfs_cache_entry *ce;
+	unsigned int h;
+
+	if (!it || !ref)
+		return -EINVAL;
+	if (!path || unlikely(!strchr(path + 1, '\\')))
+		return -EINVAL;
+
+	cifs_dbg(FYI, "%s: path: %s\n", __func__, path);
+
+	mutex_lock(&dfs_cache_lock);
+
+	ce = find_cache_entry(path, &h);
+	if (IS_ERR(ce)) {
+		rc = PTR_ERR(ce);
 		goto out;
 	}
 
-	cifs_dbg(FYI, "%s: next target: %s\n", __func__, t);
+	cifs_dbg(FYI, "%s: node name: %s\n", __func__, it->it_name);
 
-	if (ref)
-		rc = setup_ref(tree, ce, ref);
-	else
-		rc = 0;
+	rc = setup_ref(path, ce, ref, it->it_name);
 
 out:
 	mutex_unlock(&dfs_cache_lock);
