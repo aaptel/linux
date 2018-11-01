@@ -4001,11 +4001,9 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-static int mount_inval_dfs_tgt(const unsigned int xid, struct cifs_ses *ses,
-			       struct smb_vol *vol,
-			       struct cifs_sb_info *cifs_sb,
-			       const char *tree,
+static int mount_inval_dfs_tgt(const char *tree,
 			       const struct dfs_cache_tgt_iterator *tgt_it,
+			       struct cifs_sb_info *cifs_sb,
 			       struct smb_vol *fake_vol)
 {
 	int rc;
@@ -4205,6 +4203,269 @@ cifs_are_all_path_components_accessible(struct TCP_Server_Info *server,
 	return rc;
 }
 
+#ifdef CONFIG_CIFS_DFS_UPCALL
+static int get_next_dfs_tgt(struct cifs_sb_info *cifs_sb,
+			    const char *tree,
+			    struct list_head *tgt_list,
+			    struct dfs_cache_tgt_iterator **tgt_it)
+{
+	int rc;
+
+	rc = mount_get_next_tgt_iterator(tree, tgt_list, tgt_it);
+	if (rc)
+		return rc;
+
+	if (!*tgt_it)
+		return -EHOSTDOWN;
+
+	cifs_dbg(FYI, "%s: next target: %s\n", __func__,
+		 dfs_cache_get_tgt_name(*tgt_it));
+	return 0;
+}
+
+static int set_next_target_server(const char *tree,
+				  const struct dfs_cache_tgt_iterator *tgt_it,
+				  struct cifs_sb_info *cifs_sb,
+				  struct TCP_Server_Info **server,
+				  struct cifs_ses **ses,
+				  struct cifs_tcon **tcon)
+				  
+{
+	int rc;
+	struct smb_vol fake_vol = {0};
+
+	rc = mount_inval_dfs_tgt(tree, tgt_it, cifs_sb, &fake_vol);
+	if (rc)
+		return rc;
+
+	*tcon = mount_setup_next_tcon(&fake_vol, server, ses, *tcon);
+	cleanup_volume_info_contents(&fake_vol);
+	return 0;
+}
+
+static int get_conns(struct smb_vol *vol, struct cifs_sb_info *cifs_sb,
+		     const unsigned int xid, struct TCP_Server_Info **nserver,
+		     struct cifs_ses **nses, struct cifs_tcon **ntcon)
+{
+	int rc;
+	struct TCP_Server_Info *server;
+	struct cifs_ses *ses;
+	struct cifs_tcon *tcon;
+
+	*nserver = NULL;
+	*nses = NULL;
+	*ntcon = NULL;
+
+	server = cifs_get_tcp_session(vol);
+	if (IS_ERR(server)) {
+		rc = PTR_ERR(server);
+		return rc;
+	}
+
+	*nserver = server;
+
+	if ((vol->max_credits < 20) ||
+	    (vol->max_credits > 60000))
+		server->max_credits = SMB2_MAX_CREDITS_AVAILABLE;
+	else
+		server->max_credits = vol->max_credits;
+
+	ses = cifs_get_smb_ses(server, vol);
+	if (IS_ERR(ses)) {
+		rc = PTR_ERR(ses);
+		return rc;
+	}
+
+	*nses = ses;
+
+	if ((vol->persistent == true) &&
+	    (!(ses->server->capabilities &
+	       SMB2_GLOBAL_CAP_PERSISTENT_HANDLES))) {
+		cifs_dbg(VFS, "persistent handles not supported by server\n");
+		return -EOPNOTSUPP;
+	}
+
+	tcon = cifs_get_tcon(ses, vol);
+	if (IS_ERR(tcon)) {
+		rc = PTR_ERR(tcon);
+		return rc;
+	}
+
+	*ntcon = tcon;
+
+	/* if new SMB3.11 POSIX extensions are supported do not remap / and \ */
+	if (tcon->posix_extensions)
+		cifs_sb->mnt_cifs_flags |= CIFS_MOUNT_POSIX_PATHS;
+
+	/* tell server which Unix caps we support */
+	if (cap_unix(tcon->ses)) {
+		/* reset of caps checks mount to see if unix extensions
+		   disabled for just this mount */
+		reset_cifs_unix_caps(xid, tcon, cifs_sb, vol);
+		if ((tcon->ses->server->tcpStatus == CifsNeedReconnect) &&
+		    (le64_to_cpu(tcon->fsUnixInfo.Capability) &
+		     CIFS_UNIX_TRANSPORT_ENCRYPTION_MANDATORY_CAP)) {
+			rc = -EACCES;
+			return rc;
+		}
+	} else
+		tcon->unix_ext = 0; /* server does not support them */
+
+	/* do not care if a following call succeed - informational */
+	if (!tcon->pipe && server->ops->qfs_tcon)
+		server->ops->qfs_tcon(xid, tcon);
+
+	cifs_sb->wsize = server->ops->negotiate_wsize(tcon, vol);
+	cifs_sb->rsize = server->ops->negotiate_rsize(tcon, vol);
+
+	return 0;
+}
+
+static inline void put_conns(struct cifs_sb_info *cifs_sb,
+			     struct TCP_Server_Info *server,
+			     struct cifs_ses *ses, struct cifs_tcon *tcon)
+{
+	if (tcon)
+		cifs_put_tcon(tcon);
+	else if (ses)
+		cifs_put_smb_ses(ses);
+	cifs_sb->mnt_cifs_flags &= ~CIFS_MOUNT_POSIX_PATHS;
+}
+
+int __cifs_mount_dfs(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
+{
+	int rc = 0;
+	unsigned int xid;
+	struct cifs_ses *ses;
+	struct cifs_tcon *tcon;
+	struct TCP_Server_Info *server;
+	struct tcon_link *tlink;
+	char *tree;
+	LIST_HEAD(tgt_list);
+	struct dfs_cache_tgt_iterator *tgt_it = NULL;
+
+	xid = get_xid();
+
+	rc = get_conns(vol, cifs_sb, xid, &server, &ses, &tcon);
+	if (rc == -EACCES)
+		goto error;
+
+	cifs_sb->origin_unc = build_unc_path_to_root(vol, cifs_sb, true);
+	if (!cifs_sb->origin_unc) {
+		rc = -ENOMEM;
+		goto error;
+	}
+
+	/*
+	 * Perform an unconditional check for whether there are DFS
+	 * referrals for this path without prefix, to provide support
+	 * for DFS referrals from w2k8 servers which don't seem to respond
+	 * with PATH_NOT_COVERED to requests that include the prefix.
+	 * Chase the referral if found, otherwise continue normally.
+	 */
+	expand_dfs_referral(xid, ses, vol, cifs_sb, 0);
+	put_conns(cifs_sb, server, ses, tcon);
+	free_xid(xid);
+	xid = get_xid();
+
+	rc = get_conns(vol, cifs_sb, xid, &server, &ses, &tcon);
+	if (rc) {
+		tree = vol->UNC + 1;
+		for (;;) {
+			if (rc == -EACCES)
+				goto error;
+
+			rc = get_next_dfs_tgt(cifs_sb, tree, &tgt_list,
+					      &tgt_it);
+			if (rc)
+				goto error;
+
+			rc = set_next_target_server(tree, tgt_it, cifs_sb,
+						    &server, &ses, &tcon);
+			if (!rc)
+				break;
+		}
+		rc = dfs_cache_update_tgthint(xid, ses, cifs_sb->local_nls,
+					      cifs_remap(cifs_sb), tree,
+					      tgt_it);
+		if (rc)
+			goto error;
+		dfs_cache_free_tgts(&tgt_list);
+	}
+
+	if (vol->prepath) {
+		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, 1);
+		if (rc)
+			goto error;
+
+		put_conns(cifs_sb, server, ses, tcon);
+		free_xid(xid);
+		xid = get_xid();
+		rc = get_conns(vol, cifs_sb, xid, &server, &ses, &tcon);
+	}
+
+	if (rc) {
+		tree = cifs_sb->origin_unc + 1;
+		for (;;) {
+			if (rc == -EACCES)
+				goto error;
+
+			rc = get_next_dfs_tgt(cifs_sb, tree, &tgt_list,
+					      &tgt_it);
+			if (rc)
+				goto error;
+
+			rc = set_next_target_server(tree, tgt_it, cifs_sb,
+						    &server, &ses, &tcon);
+			if (!rc)
+				break;
+		}
+		rc = dfs_cache_update_tgthint(xid, ses, cifs_sb->local_nls,
+					      cifs_remap(cifs_sb), tree,
+					      tgt_it);
+		if (rc)
+			goto error;
+		dfs_cache_free_tgts(&tgt_list);
+	}
+
+	free_xid(xid);
+		
+	/* now, hang the tcon off of the superblock */
+	tlink = kzalloc(sizeof *tlink, GFP_KERNEL);
+	if (tlink == NULL) {
+		rc = -ENOMEM;
+		goto error;
+	}
+
+	tlink->tl_uid = ses->linux_uid;
+	tlink->tl_tcon = tcon;
+	tlink->tl_time = jiffies;
+	set_bit(TCON_LINK_MASTER, &tlink->tl_flags);
+	set_bit(TCON_LINK_IN_TREE, &tlink->tl_flags);
+
+	cifs_sb->master_tlink = tlink;
+	spin_lock(&cifs_sb->tlink_tree_lock);
+	tlink_rb_insert(&cifs_sb->tlink_tree, tlink);
+	spin_unlock(&cifs_sb->tlink_tree_lock);
+
+	queue_delayed_work(cifsiod_wq, &cifs_sb->prune_tlinks,
+				TLINK_IDLE_EXPIRE);
+
+	return 0;
+
+error:
+	dfs_cache_free_tgts(&tgt_list);
+	if (tcon)
+		cifs_put_tcon(tcon);
+	else if (ses)
+		cifs_put_smb_ses(ses);
+	else if (server)
+		cifs_put_tcp_session(server, 0);
+	return rc;
+}
+#endif
+
+#if 0
 int
 cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
 {
@@ -4226,6 +4487,8 @@ cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
 #endif
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
+	if (1)
+		return __cifs_mount_dfs(cifs_sb, volume_info);
 try_mount_again:
 	/* cleanup activities if we're chasing a referral */
 	if (referral_walks_count) {
@@ -4525,6 +4788,12 @@ out:
 #endif
 	free_xid(xid);
 	return rc;
+}
+#endif
+
+int cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *volume_info)
+{
+	return __cifs_mount_dfs(cifs_sb, volume_info);
 }
 
 /*
