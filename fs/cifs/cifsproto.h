@@ -214,7 +214,7 @@ extern int cifs_match_super(struct super_block *, void *);
 extern void cifs_cleanup_volume_info(struct smb_vol *pvolume_info);
 extern struct smb_vol *cifs_get_volume_info(char *mount_data,
 					    const char *devname, bool is_smb3);
-extern int cifs_mount(struct cifs_sb_info *, struct smb_vol *);
+int __cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol);
 extern void cifs_umount(struct cifs_sb_info *);
 extern void cifs_mark_open_files_invalid(struct cifs_tcon *tcon);
 extern void cifs_reopen_persistent_handles(struct cifs_tcon *tcon);
@@ -235,6 +235,7 @@ extern void cifs_put_tcp_session(struct TCP_Server_Info *server,
 extern void cifs_put_tcon(struct cifs_tcon *tcon);
 
 #if IS_ENABLED(CONFIG_CIFS_DFS_UPCALL)
+int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol);
 extern void cifs_dfs_release_automount_timer(void);
 #else /* ! IS_ENABLED(CONFIG_CIFS_DFS_UPCALL) */
 #define cifs_dfs_release_automount_timer()	do { } while (0)
@@ -557,6 +558,15 @@ void cifs_free_hash(struct crypto_shash **shash, struct sdesc **sdesc);
 
 extern void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
 				unsigned int *len, unsigned int *offset);
+
+static inline int cifs_mount(struct cifs_sb_info *cifs_sb,
+			     struct smb_vol *volume_info)
+{
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	return __cifs_dfs_mount(cifs_sb, volume_info);
+#endif
+	return __cifs_mount(cifs_sb, volume_info);
+}
 
 static inline int get_dfs_path(const unsigned int xid, struct cifs_ses *ses,
 			       const char *old_path,
