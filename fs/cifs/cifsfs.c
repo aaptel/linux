@@ -52,6 +52,9 @@
 #include "cifs_spnego.h"
 #include "fscache.h"
 #include "smb2pdu.h"
+#ifdef CONFIG_CIFS_UPCALL
+#include "dfs_cache.h"
+#endif
 
 int cifsFYI = 0;
 bool traceSMB;
