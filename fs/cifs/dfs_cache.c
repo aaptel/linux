@@ -67,6 +67,14 @@ static struct kmem_cache *dfs_cache_slab __read_mostly;
 static DEFINE_MUTEX(dfs_cache_lock);
 static struct hlist_head dfs_cache_htable[DFS_CACHE_HTABLE_SIZE];
 
+static inline bool entry_expired(const struct dfs_cache_entry *ce)
+{
+	struct timespec64 ts;
+
+	ts = current_kernel_time64();
+	return timespec64_compare(&ts, &ce->ce_etime) >= 0;
+}
+
 static inline void free_tgts(struct dfs_cache_entry *ce)
 {
 	struct dfs_cache_tgt *t, *n;
@@ -126,12 +134,13 @@ static int dfscache_proc_show(struct seq_file *m, void *v)
 	hash_for_each_rcu(dfs_cache_htable, bucket, ce, ce_hlist) {
 		seq_printf(m,
 			   "cache entry: path=%s,type=%s,ttl=%d,etime=%ld,"
-			   "interlink=%s,path_consumed=%d\n",
+			   "interlink=%s,path_consumed=%d,expired=%s\n",
 			   ce->ce_path,
 			   ce->ce_srvtype == DFS_TYPE_ROOT ? "root" : "link", ce->ce_ttl,
 			   ce->ce_etime.tv_nsec,
 			   IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no",
-			   ce->ce_path_consumed);
+			   ce->ce_path_consumed,
+			   entry_expired(ce) ? "yes" : "no");
 
 		list_for_each_entry(t, &ce->ce_tlist, t_list) {
 			seq_printf(m, "  %s%s\n",
@@ -197,11 +206,12 @@ static inline void dump_tgts(const struct dfs_cache_entry *ce)
 static inline void dump_ce(const struct dfs_cache_entry *ce)
 {
 	cifs_dbg(FYI, "cache entry: path=%s,type=%s,ttl=%d,etime=%ld,"
-		 "interlink=%s,path_consumed=%d\n", ce->ce_path,
+		 "interlink=%s,path_consumed=%d,expired=%s\n", ce->ce_path,
 		 ce->ce_srvtype == DFS_TYPE_ROOT ? "root" : "link", ce->ce_ttl,
 		 ce->ce_etime.tv_nsec,
 		 IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no",
-		 ce->ce_path_consumed);
+		 ce->ce_path_consumed,
+		 entry_expired(ce) ? "yes" : "no");
 	dump_tgts(ce);
 }
 
@@ -529,7 +539,6 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 {
 	int rc;
 	unsigned int h;
-	struct timespec64 ts;
 	bool interlink;
 	struct dfs_cache_entry *ce;
 	struct dfs_info3_param *nrefs;
@@ -582,8 +591,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 
 		interlink = IS_INTERLINK_SET(ce->ce_flags);
 
-		ts = current_kernel_time64();
-		if (timespec64_compare(&ts, &ce->ce_etime) >= 0) {
+		if (entry_expired(ce)) {
 			cifs_dbg(FYI, "%s: expired TTL\n", __func__);
 			ce = update_cache_entry(xid, ses, nls_codepage, remap,
 						path, check_ppath, ce);
