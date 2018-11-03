@@ -67,6 +67,50 @@ static struct kmem_cache *dfs_cache_slab __read_mostly;
 static DEFINE_MUTEX(dfs_cache_lock);
 static struct hlist_head dfs_cache_htable[DFS_CACHE_HTABLE_SIZE];
 
+static inline void free_tgts(struct dfs_cache_entry *ce)
+{
+	struct dfs_cache_tgt *t, *n;
+
+	list_for_each_entry_safe(t, n, &ce->ce_tlist, t_list) {
+		list_del(&t->t_list);
+		kfree(t->t_name);
+		kfree(t);
+	}
+}
+
+static void free_cache_entry(struct rcu_head *rcu)
+{
+	struct dfs_cache_entry *ce = container_of(rcu, struct dfs_cache_entry,
+						  ce_rcu);
+	kmem_cache_free(dfs_cache_slab, ce);
+}
+
+static inline void flush_cache_ent(struct dfs_cache_entry *ce)
+{
+	if (hlist_unhashed(&ce->ce_hlist))
+		return;
+
+	hlist_del_init_rcu(&ce->ce_hlist);
+	kfree(ce->ce_path);
+	free_tgts(ce);
+	call_rcu(&ce->ce_rcu, free_cache_entry);
+}
+
+static void flush_cache_ents(void)
+{
+	int i;
+
+	rcu_read_lock();
+	for (i = 0; i < DFS_CACHE_HTABLE_SIZE; i++) {
+		struct hlist_head *l = &dfs_cache_htable[i];
+		struct dfs_cache_entry *ce;
+
+		hlist_for_each_entry_rcu(ce, l, ce_hlist)
+			flush_cache_ent(ce);
+	}
+	rcu_read_unlock();
+}
+
 /*
  * dfs cache /proc file
  */
@@ -100,10 +144,8 @@ static int dfscache_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static void flush_cache_ents(void);
-
 static ssize_t dfscache_proc_write(struct file *file, const char __user *buffer,
-		size_t count, loff_t *ppos)
+				   size_t count, loff_t *ppos)
 {
 	char c[2] = {0};
 	int rc;
@@ -238,17 +280,6 @@ static inline struct timespec64 get_expire_time(int ttl)
 	};
 
 	return timespec64_add(current_kernel_time64(), ts);
-}
-
-static inline void free_tgts(struct dfs_cache_entry *ce)
-{
-	struct dfs_cache_tgt *t, *n;
-
-	list_for_each_entry_safe(t, n, &ce->ce_tlist, t_list) {
-		list_del(&t->t_list);
-		kfree(t->t_name);
-		kfree(t);
-	}
 }
 
 static inline struct dfs_cache_tgt *alloc_tgt(const char *name)
@@ -406,39 +437,6 @@ static struct dfs_cache_entry *find_cache_entry(const char *path,
 		while (*q-- != '\\');
 	} while (q >= s);
 	return ce;
-}
-
-static void free_cache_entry(struct rcu_head *rcu)
-{
-	struct dfs_cache_entry *ce = container_of(rcu, struct dfs_cache_entry,
-						  ce_rcu);
-	kmem_cache_free(dfs_cache_slab, ce);
-}
-
-static inline void flush_cache_ent(struct dfs_cache_entry *ce)
-{
-	if (hlist_unhashed(&ce->ce_hlist))
-		return;
-
-	hlist_del_init_rcu(&ce->ce_hlist);
-	kfree(ce->ce_path);
-	free_tgts(ce);
-	call_rcu(&ce->ce_rcu, free_cache_entry);
-}
-
-static void flush_cache_ents(void)
-{
-	int i;
-
-	rcu_read_lock();
-	for (i = 0; i < DFS_CACHE_HTABLE_SIZE; i++) {
-		struct hlist_head *l = &dfs_cache_htable[i];
-		struct dfs_cache_entry *ce;
-
-		hlist_for_each_entry_rcu(ce, l, ce_hlist)
-			flush_cache_ent(ce);
-	}
-	rcu_read_unlock();
 }
 
 static inline void destroy_slab_cache(void)

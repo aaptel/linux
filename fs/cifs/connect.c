@@ -58,7 +58,9 @@
 #include "smbdirect.h"
 #include "dns_resolve.h"
 #include "cifsfs.h"
+#ifdef CONFIG_CIFS_DFS_UPCALL
 #include "dfs_cache.h"
+#endif
 
 #define __pl() do { cifs_dbg(FYI, "%s:%d here\n", __func__, __LINE__); } while (0)
 
@@ -325,9 +327,6 @@ static int cifs_setup_volume_info(struct smb_vol *volume_info, char *mount_data,
 static char *extract_hostname(const char *unc);
 struct cifs_tcon *
 cifs_sb_master_tcon(struct cifs_sb_info *cifs_sb);
-static bool
-match_address(struct TCP_Server_Info *server, struct sockaddr *addr,
-	      struct sockaddr *srcaddr);
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
 struct super_cb_data {
