@@ -249,22 +249,12 @@ compose_mount_options_err:
  * @fullpath:		full path in UNC format
  * @ref:		server's referral
  */
-#if 1
 static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
 		struct cifs_sb_info *cifs_sb,
 		const char *fullpath, const struct dfs_info3_param *ref)
 {
-	int len;
-	char *origin_unc;
 	struct vfsmount *mnt;
 	char *mountdata;
-
-	len = strlen(ref->path_name) + 2;
-
-	origin_unc = kmalloc(len, GFP_KERNEL);
-	if (!origin_unc)
-		return ERR_PTR(-ENOMEM);
-	snprintf(origin_unc, len, "\\%s", ref->path_name);
 
 	/* strip first '\' from fullpath */
 	mountdata = cifs_compose_mount_options(cifs_sb->mountdata,
@@ -275,36 +265,12 @@ static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
 		goto out;
 	}
 
-	mnt = vfs_submount(mntpt, &cifs_fs_type, origin_unc, mountdata);
+	mnt = vfs_submount(mntpt, &cifs_fs_type, fullpath, mountdata);
 
 out:
-	kfree(origin_unc);
 	kfree(mountdata);
 	return mnt;
 }
-#else
-static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
-					     struct cifs_sb_info *cifs_sb,
-					     const char *fullpath, const struct dfs_info3_param *ref)
-{
-	struct vfsmount *mnt;
-	char *mountdata;
-	char *devname = NULL;
-
-	/* strip first '\' from fullpath */
-	mountdata = cifs_compose_mount_options(cifs_sb->mountdata,
-					       fullpath + 1, ref, &devname);
-
-	if (IS_ERR(mountdata))
-		return (struct vfsmount *)mountdata;
-
-	mnt = vfs_submount(mntpt, &cifs_fs_type, devname, mountdata);
-	kfree(mountdata);
-	kfree(devname);
-	return mnt;
-
-}
-#endif
 
 static void dump_referral(const struct dfs_info3_param *ref)
 {
@@ -382,7 +348,7 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	xid = get_xid();
 
 	/*
-	 * If DFS root was expired, then unconditionally fetch it agait to
+	 * If DFS root has been expired, then unconditionally fetch it again to
 	 * refresh DFS referral cache.
 	 */
 	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
@@ -390,7 +356,7 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	if (!rc) {
 		rc = dfs_cache_find(xid, ses, cifs_sb->local_nls,
 				    cifs_remap(cifs_sb), full_path + 1,
-				    &referral, NULL, true);
+				    &referral, NULL, false);
 	}
 
 	free_xid(xid);

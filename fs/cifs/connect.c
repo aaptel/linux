@@ -325,12 +325,17 @@ static int cifs_setup_volume_info(struct smb_vol *volume_info, char *mount_data,
 static char *extract_hostname(const char *unc);
 struct cifs_tcon *
 cifs_sb_master_tcon(struct cifs_sb_info *cifs_sb);
+static bool
+match_address(struct TCP_Server_Info *server, struct sockaddr *addr,
+	      struct sockaddr *srcaddr);
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
 struct super_cb_data {
 	struct TCP_Server_Info *server;
 	struct cifs_sb_info *cifs_sb;
 };
+
+/* These functions must be called with server->srv_mutex held */
 
 static void super_cb(struct super_block *sb, void *arg)
 {
@@ -343,11 +348,8 @@ static void super_cb(struct super_block *sb, void *arg)
 
 	cifs_sb = CIFS_SB(sb);
 	tcon = cifs_sb_master_tcon(cifs_sb);
-	if (tcon->ses->server == d->server &&
-	    cifs_sb->origin_unc && cifs_sb->origin_fullpath)
+	if (tcon->ses->server == d->server)
 		d->cifs_sb = cifs_sb;
-	else
-		d->cifs_sb = ERR_PTR(-ENOENT);
 }
 
 static inline struct cifs_sb_info *find_super_by_tcp(struct TCP_Server_Info *server)
@@ -358,10 +360,9 @@ static inline struct cifs_sb_info *find_super_by_tcp(struct TCP_Server_Info *ser
 	};
 
 	iterate_supers_type(&cifs_fs_type, super_cb, &d);
-	return d.cifs_sb;
+	return d.cifs_sb ? d.cifs_sb : ERR_PTR(-ENOENT);
 }
 
-/* must be called with server->srv_mutex held */
 static void reconn_inval_dfs_target(struct TCP_Server_Info *server,
 				    struct cifs_sb_info *cifs_sb,
 				    struct list_head *tgt_list,
@@ -403,7 +404,9 @@ static void reconn_inval_dfs_target(struct TCP_Server_Info *server,
 	tcon = cifs_sb_master_tcon(cifs_sb);
 
 	spin_lock(&cifs_tcp_ses_lock);
+
 	snprintf(tcon->treeName, sizeof(tcon->treeName), "\\%s", name);
+
 	spin_unlock(&cifs_tcp_ses_lock);
 
 	len = strlen(server->hostname) + 3;
@@ -588,7 +591,7 @@ cifs_reconnect(struct TCP_Server_Info *server)
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	if (tgt_it) {
-		rc = dfs_cache_noreq_update_tgthint(cifs_sb->origin_unc + 1,
+		rc = dfs_cache_noreq_update_tgthint(cifs_sb->origin_fullpath + 1,
 						    tgt_it);
 		if (rc) {
 			cifs_dbg(VFS, "%s: failed to update DFS target hint\n",
@@ -4435,7 +4438,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	 * with PATH_NOT_COVERED to requests that include the prefix.
 	 * Chase the referral if found, otherwise continue normally.
 	 */
-	expand_dfs_referral(xid, ses, vol, cifs_sb, 0, false);
+	(void)expand_dfs_referral(xid, ses, vol, cifs_sb, 0, false);
 
 	/* Connect to target server */
 	mount_put_conns(cifs_sb, xid, server, ses, tcon);
