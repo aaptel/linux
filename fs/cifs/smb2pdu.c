@@ -50,6 +50,9 @@
 #include "cifs_spnego.h"
 #include "smbdirect.h"
 #include "trace.h"
+#ifdef CONFIG_CIFS_DFS_UPCALL
+#include "dfs_cache.h"
+#endif
 
 /*
  *  The following table defines the expected "StructureSize" of SMB2 requests
@@ -152,6 +155,69 @@ out:
 	return;
 }
 
+#ifdef CONFIG_CIFS_DFS_UPCALL
+static int __smb2_do_reconnect_tcon(const struct nls_table *nlsc,
+				    struct cifs_tcon *tcon)
+{
+	int rc;
+	LIST_HEAD(list);
+	struct dfs_cache_tgt_iterator *it = NULL;
+	char tree[MAX_TREE_SIZE + 1];
+
+	if (unlikely(!tcon->dfs_path)) {
+		WARN_ON_ONCE(!tcon->dfs_path);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	if (tcon->ipc) {
+		snprintf(tree, sizeof(tree), "\\\\%s\\IPC$",
+			 tcon->ses->server->hostname);
+		rc = SMB2_tcon(0, tcon->ses, tree, tcon, nlsc);
+		goto out;
+	}
+
+	/*
+	 * FIXME: smb2_get_dfs_refer() is hanging when attempting to update an
+	 * expired DFS cache entry.
+	 */
+	rc = dfs_cache_noreq_find(tcon->dfs_path + 1, NULL, &list);
+	if (rc && rc != -ETIME)
+		goto out;
+
+	for (it = dfs_cache_get_tgt_iterator(&list); it;
+	     it = dfs_cache_get_next_tgt(&list, it)) {
+		snprintf(tree, sizeof(tree), "\\%s",
+			 dfs_cache_get_tgt_name(it));
+
+		rc = SMB2_tcon(0, tcon->ses, tree, tcon, nlsc);
+		if (!rc)
+			break;
+		if (rc == -EREMOTE)
+			break;
+	}
+
+	if (!rc) {
+		if (it) {
+			(void)dfs_cache_noreq_update_tgthint(tcon->dfs_path + 1,
+							     it);
+		} else {
+			rc = -ENOENT;
+		}
+	}
+
+out:
+	dfs_cache_free_tgts(&list);
+	return rc;
+}
+#else
+static inline int __smb2_do_reconnect_tcon(const struct nls_table *nlsc,
+					   struct cifs_tcon *tcon)
+{
+	return SMB2_tcon(0, tcon->ses, tcon->treeName, tcon, nlsc);
+}
+#endif
+
 static int
 smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon)
 {
@@ -247,6 +313,8 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon)
 	 */
 	mutex_lock(&tcon->ses->session_mutex);
 
+	cifs_dbg(FYI, "%s: tcon - dfs path: %s\n", __func__, tcon->dfs_path);
+
 	/*
 	 * Recheck after acquire mutex. If another thread is negotiating
 	 * and the server never sends an answer the socket will be closed
@@ -271,7 +339,7 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon)
 	if (tcon->use_persistent)
 		tcon->need_reopen_files = true;
 
-	rc = SMB2_tcon(0, tcon->ses, tcon->treeName, tcon, nls_codepage);
+	rc = __smb2_do_reconnect_tcon(nls_codepage, tcon);
 	mutex_unlock(&tcon->ses->session_mutex);
 
 	cifs_dbg(FYI, "reconnect tcon rc = %d\n", rc);

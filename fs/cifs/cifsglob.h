@@ -1014,6 +1014,10 @@ struct cifs_tcon {
 	struct list_head pending_opens;	/* list of incomplete opens */
 	struct cached_fid crfid; /* Cached root fid */
 	/* BB add field for back pointer to sb struct(s)? */
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	char *dfs_path;
+	bool remap:1;
+#endif
 };
 
 /*

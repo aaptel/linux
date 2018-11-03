@@ -34,7 +34,7 @@ struct dfs_cache_tgt_iterator {
 ({ \
 	int __rc; \
 	__rc = __dfs_cache_find(0, NULL, NULL, 0, path, ref, tgt_list, true); \
-	__rc == -ENOSYS ? -ENOENT : __rc; \
+	__rc == -ENOSYS ? -ETIME : __rc; \
 })
 
 #define dfs_cache_update_tgthint(xid, ses, nc, remap, path, it) \
@@ -43,7 +43,7 @@ struct dfs_cache_tgt_iterator {
 ({ \
 	int __rc; \
 	__rc = __dfs_cache_update_tgthint(0, NULL, NULL, 0, path, it); \
-	__rc == -ENOSYS ? -ENOENT : __rc; \
+	__rc == -ENOSYS ? -ETIME : __rc; \
 })
 
 int dfs_cache_init(void);
