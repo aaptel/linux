@@ -379,9 +379,19 @@ static void reconn_inval_dfs_target(struct TCP_Server_Info *server,
 
 	*tgt_it = dfs_cache_get_next_tgt(tgt_list, *tgt_it);
 	if (!*tgt_it) {
-		cifs_dbg(FYI, "%s: no DFS targets left for reconnect\n",
-			 __func__);
-		return;
+		/*
+		 * No DFS targets left for reconnect. However, if the cached
+		 * entry is still unexpired, then get target iterator again and
+		 * keep trying to reconnect to every target in its list.
+		 */
+		rc = dfs_cache_noreq_find(cifs_sb->origin_fullpath + 1, NULL,
+					  NULL);
+		if (rc) {
+			cifs_dbg(FYI, "%s: no DFS targets left for reconnect\n",
+				 __func__);
+			return;
+		}
+		*tgt_it = dfs_cache_get_tgt_iterator(tgt_list);
 	}
 
 	cifs_dbg(FYI, "%s: origin path: %s\n", __func__,
