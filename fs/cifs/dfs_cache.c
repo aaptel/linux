@@ -67,7 +67,7 @@ static struct kmem_cache *dfs_cache_slab __read_mostly;
 static DEFINE_MUTEX(dfs_cache_lock);
 static struct hlist_head dfs_cache_htable[DFS_CACHE_HTABLE_SIZE];
 
-static inline bool entry_expired(const struct dfs_cache_entry *ce)
+static inline bool cache_entry_expired(const struct dfs_cache_entry *ce)
 {
 	struct timespec64 ts;
 
@@ -140,7 +140,7 @@ static int dfscache_proc_show(struct seq_file *m, void *v)
 			   ce->ce_etime.tv_nsec,
 			   IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no",
 			   ce->ce_path_consumed,
-			   entry_expired(ce) ? "yes" : "no");
+			   cache_entry_expired(ce) ? "yes" : "no");
 
 		list_for_each_entry(t, &ce->ce_tlist, t_list) {
 			seq_printf(m, "  %s%s\n",
@@ -211,7 +211,7 @@ static inline void dump_ce(const struct dfs_cache_entry *ce)
 		 ce->ce_etime.tv_nsec,
 		 IS_INTERLINK_SET(ce->ce_flags) ? "yes" : "no",
 		 ce->ce_path_consumed,
-		 entry_expired(ce) ? "yes" : "no");
+		 cache_entry_expired(ce) ? "yes" : "no");
 	dump_tgts(ce);
 }
 
@@ -591,7 +591,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 
 		interlink = IS_INTERLINK_SET(ce->ce_flags);
 
-		if (entry_expired(ce)) {
+		if (cache_entry_expired(ce)) {
 			cifs_dbg(FYI, "%s: expired TTL\n", __func__);
 			ce = update_cache_entry(xid, ses, nls_codepage, remap,
 						path, check_ppath, ce);
