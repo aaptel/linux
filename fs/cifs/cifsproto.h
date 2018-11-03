@@ -22,7 +22,9 @@
 #define _CIFSPROTO_H
 #include <linux/nls.h>
 #include "trace.h"
+#ifdef CONFIG_CIFS_DFS_UPCALL
 #include "dfs_cache.h"
+#endif
 
 struct statfs;
 struct smb_vol;
@@ -568,13 +570,15 @@ static inline int cifs_mount(struct cifs_sb_info *cifs_sb,
 	return __cifs_mount(cifs_sb, volume_info);
 }
 
+#ifdef CONFIG_CIFS_DFS_UPCALL
 static inline int get_dfs_path(const unsigned int xid, struct cifs_ses *ses,
 			       const char *old_path,
 			       const struct nls_table *nls_codepage,
 			       struct dfs_info3_param *referral, int remap)
 {
 	return dfs_cache_find(xid, ses, nls_codepage, remap, old_path,
-			      referral, NULL, false);
+			      referral, NULL, true);
 }
+#endif
 
 #endif			/* _CIFSPROTO_H */
