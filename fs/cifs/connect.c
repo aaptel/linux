@@ -4465,13 +4465,13 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	}
 
 	for (count = 1; ;) {
-		if (!rc && tcon)
+		if (!rc && tcon) {
 			rc = is_path_remote(cifs_sb, vol, xid, server, tcon);
-		if (!rc)
-			break;
-		else if (rc != -EREMOTE)
-			goto error;
-
+			if (!rc)
+				break; /* not a DFS link */
+			if (rc != -EREMOTE)
+				goto error;
+		}
 		/*
 		 * BB: when we implement proper loop detection,
 		 *     we will remove this check. But now we need it
@@ -4480,12 +4480,12 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		 */
 		if (count++ > MAX_NESTED_LINKS) {
 			rc = -ELOOP;
-			break;
+			goto error;
 		}
 
 		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, 1, false);
 		if (rc)
-			break;
+			goto error;
 
 		mount_put_conns(cifs_sb, xid, server, ses, tcon);
 		rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
@@ -4498,7 +4498,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 			rc = mount_do_dfs_failover(tree, cifs_sb, &xid, &server,
 						   &ses, &tcon);
 			if (rc)
-				break;
+				goto error;
 		}
 	}
 
