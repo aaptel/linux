@@ -28,36 +28,22 @@ struct dfs_cache_tgt_iterator {
 	struct list_head it_list;
 };
 
-#define dfs_cache_find(xid, ses, nc, remap, path, ref, tgt_list, check_ppath) \
-	__dfs_cache_find(xid, ses, nc, remap, path, ref, tgt_list, check_ppath)
-#define dfs_cache_noreq_find(path, ref, tgt_list) \
-({ \
-	int __rc; \
-	__rc = __dfs_cache_find(0, NULL, NULL, 0, path, ref, tgt_list, true); \
-	__rc == -ENOSYS ? -ETIME : __rc; \
-})
-
-#define dfs_cache_update_tgthint(xid, ses, nc, remap, path, it) \
-	__dfs_cache_update_tgthint(xid, ses, nc, remap, path, it)
-#define dfs_cache_noreq_update_tgthint(path, it) \
-({ \
-	int __rc; \
-	__rc = __dfs_cache_update_tgthint(0, NULL, NULL, 0, path, it); \
-	__rc == -ENOSYS ? -ETIME : __rc; \
-})
-
 int dfs_cache_init(void);
 void dfs_cache_destroy(void);
 extern const struct file_operations dfscache_proc_fops;
 
-int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-		     const struct nls_table *nls_codepage, int remap,
-		     const char *path, struct dfs_info3_param *ref,
-		     struct list_head *tgt_list, bool check_ppath);
-int __dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
-			       const struct nls_table *nls_codepage, int remap,
-			       const char *path,
-			       const struct dfs_cache_tgt_iterator *it);
+int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
+		   const struct nls_table *nls_codepage, int remap,
+		   const char *path, struct dfs_info3_param *ref,
+		   struct list_head *tgt_list, bool check_ppath);
+int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
+			 struct list_head *tgt_list);
+int dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
+			     const struct nls_table *nls_codepage, int remap,
+			     const char *path,
+			     const struct dfs_cache_tgt_iterator *it);
+int dfs_cache_noreq_update_tgthint(const char *path,
+				   const struct dfs_cache_tgt_iterator *it);
 
 static inline struct dfs_cache_tgt_iterator *
 dfs_cache_get_next_tgt(struct list_head *head,
