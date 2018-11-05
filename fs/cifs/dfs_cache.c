@@ -130,6 +130,8 @@ static int dfscache_proc_show(struct seq_file *m, void *v)
 	cifs_dbg(VFS, "XXX in proc read");
 	seq_puts(m, "DFS cache\n---------\n");
 
+	mutex_lock(&dfs_cache_lock);
+
 	rcu_read_lock();
 	hash_for_each_rcu(dfs_cache_htable, bucket, ce, ce_hlist) {
 		seq_printf(m,
@@ -150,6 +152,8 @@ static int dfscache_proc_show(struct seq_file *m, void *v)
 
 	}
 	rcu_read_unlock();
+
+	mutex_unlock(&dfs_cache_lock);
 	return 0;
 }
 
