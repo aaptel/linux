@@ -72,8 +72,16 @@ struct cifs_sb_info {
 	char   *mountdata; /* options received at mount time or via DFS refs */
 	struct delayed_work prune_tlinks;
 	struct rcu_head rcu;
+
+	/* only used when CIFS_MOUNT_USE_PREFIX_PATH is set */
 	char *prepath;
-	char *origin_unc;
-	char *origin_fullpath;
+
+	/*
+	 * Paths initially provided by the mount call. We might connect
+	 * to something different via DFS but we want to keep those to
+	 * do failover properly.
+	 */
+	char *origin_unc; /* \\HOST\SHARE */
+	char *origin_fullpath; /* \\HOST\SHARE\[OPTIONAL PATH] */
 };
 #endif				/* _CIFS_FS_SB_H */

@@ -4096,8 +4096,9 @@ build_unc_path_to_root(const struct smb_vol *vol,
 	return full_path;
 }
 
-/*
- * Perform a dfs referral query for a share and (optionally) prefix
+/**
+ * expand_dfs_referral - Perform a dfs referral query and update the cifs_sb
+ *
  *
  * If a referral is found, cifs_sb->mountdata will be (re-)allocated
  * to a string containing updated options for the submount.  Otherwise it
@@ -4109,7 +4110,7 @@ build_unc_path_to_root(const struct smb_vol *vol,
 static int
 expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		    struct smb_vol *volume_info, struct cifs_sb_info *cifs_sb,
-		    int check_prefix, bool cache_check_ppath)
+		    bool use_origin)
 {
 	int rc;
 	struct dfs_info3_param referral = {0};
@@ -4118,13 +4119,13 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
 		return -EREMOTE;
 
-	if (check_prefix)
+	if (use_origin)
 		ref_path = cifs_sb->origin_fullpath + 1;
 	else
 		ref_path = volume_info->UNC + 1;
 
 	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
-			    ref_path, &referral, NULL, cache_check_ppath);
+			    ref_path, &referral, NULL, false);
 	if (!rc) {
 		char *fake_devname = NULL;
 
@@ -4425,6 +4426,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	struct cifs_tcon *tcon;
 	struct TCP_Server_Info *server;
 	char *fullpath = NULL;
+	char *old_mountdata;
 	char *tree;
 	int count;
 
@@ -4432,7 +4434,10 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	if (rc == -EACCES)
 		goto error;
 
-	/* Save origin UNC path for DFS failover */
+	/*
+	 * Save origin UNC and full path to be used during reconnect for DFS
+	 * failover.
+	 */
 	cifs_sb->origin_unc = build_unc_path_to_root(vol, cifs_sb, false);
 	if (!cifs_sb->origin_unc) {
 		rc = -ENOMEM;
@@ -4452,11 +4457,18 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	 * with PATH_NOT_COVERED to requests that include the prefix.
 	 * Chase the referral if found, otherwise continue normally.
 	 */
-	(void)expand_dfs_referral(xid, ses, vol, cifs_sb, 0, false);
+	old_mountdata = cifs_sb->mountdata;
+	(void)expand_dfs_referral(xid, ses, vol, cifs_sb, false, false);
 
-	/* Connect to target server */
-	mount_put_conns(cifs_sb, xid, server, ses, tcon);
-	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
+	if (cifs_sb->mountdata == NULL)
+		goto error;
+
+	if (cifs_sb->mountdata != old_mountdata) {
+		/* If we were redirected, reconnect to new target server */
+		mount_put_conns(cifs_sb, xid, server, ses, tcon);
+		rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
+	}
+
 	if (rc) {
 		tree = cifs_sb->origin_unc + 1;
 
@@ -4488,12 +4500,15 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 			goto error;
 		}
 
-		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, 1, false);
+		old_mountdata = cifs_sb->mountdata;
+		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, true, false);
 		if (rc)
 			goto error;
 
-		mount_put_conns(cifs_sb, xid, server, ses, tcon);
-		rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
+		if (cifs_sb->mountdata != old_mountdata) {
+			mount_put_conns(cifs_sb, xid, server, ses, tcon);
+			rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
+		}
 		if (rc) {
 			tree = fullpath + 1;
 
