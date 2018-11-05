@@ -4458,7 +4458,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	 * Chase the referral if found, otherwise continue normally.
 	 */
 	old_mountdata = cifs_sb->mountdata;
-	(void)expand_dfs_referral(xid, ses, vol, cifs_sb, false, false);
+	(void)expand_dfs_referral(xid, ses, vol, cifs_sb, false);
 
 	if (cifs_sb->mountdata == NULL)
 		goto error;
@@ -4501,7 +4501,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		}
 
 		old_mountdata = cifs_sb->mountdata;
-		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, true, false);
+		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, true);
 		if (rc)
 			goto error;
 
