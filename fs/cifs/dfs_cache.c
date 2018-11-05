@@ -512,9 +512,9 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 	cifs_dbg(FYI, "%s: update expired cache entry\n", __func__);
 
 	if (!ses || !ses->server || !ses->server->ops->get_dfs_refer)
-		return ERR_PTR(-ENOSYS);
+		return ERR_PTR(-ETIME);
 	if (unlikely(!nls_codepage))
-		return ERR_PTR(-EINVAL);
+		return ERR_PTR(-ETIME);
 
 	cifs_dbg(FYI, "%s: DFS referral request for %s\n", __func__, path);
 
@@ -535,7 +535,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 						 struct cifs_ses *ses,
 						 const struct nls_table *nls_codepage,
 						 int remap, const char *path,
-						 bool check_ppath)
+						 bool check_ppath, bool noreq)
 {
 	int rc;
 	unsigned int h;
@@ -550,6 +550,13 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 		ce = find_cache_entry(path, &h, check_ppath);
 		if (IS_ERR(ce)) {
 			cifs_dbg(FYI, "%s: cache miss\n", __func__);
+			/*
+			 * If noreq is set, no requests will be sent to the
+			 * server for either updating or getting a new DFS
+			 * referral.
+			 */
+			if (noreq)
+				break;
 
 			if (!ses || !ses->server ||
 			    !ses->server->ops->get_dfs_refer) {
@@ -588,6 +595,10 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 		}
 
 		dump_ce(ce);
+
+		/* Just return the found cache entry in case noreq is set */
+		if (noreq)
+			break;
 
 		interlink = IS_INTERLINK_SET(ce->ce_flags);
 
@@ -688,10 +699,10 @@ err_free_it:
 	return rc;
 }
 
-int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-		     const struct nls_table *nls_codepage, int remap,
-		     const char *path, struct dfs_info3_param *ref,
-		     struct list_head *tgt_list, bool check_ppath)
+int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
+		   const struct nls_table *nls_codepage, int remap,
+		   const char *path, struct dfs_info3_param *ref,
+		   struct list_head *tgt_list, bool check_ppath)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -701,7 +712,7 @@ int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 
 	mutex_lock(&dfs_cache_lock);
 	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path,
-			       check_ppath);
+			       check_ppath, false);
 	if (!IS_ERR(ce)) {
 		if (ref)
 			rc = setup_ref(path, ce, ref, get_tgt_name(ce));
@@ -716,10 +727,39 @@ int __dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-int __dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
-			       const struct nls_table *nls_codepage, int remap,
-			       const char *path,
-			       const struct dfs_cache_tgt_iterator *it)
+int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
+			 struct list_head *tgt_list)
+{
+	int rc;
+	struct dfs_cache_entry *ce;
+
+	if (!path || unlikely(!strchr(path + 1, '\\')))
+		return -EINVAL;
+
+	mutex_lock(&dfs_cache_lock);
+
+	ce = do_dfs_cache_find(0, NULL, NULL, 0, path, true, true);
+	if (IS_ERR(ce)) {
+		rc = PTR_ERR(ce);
+		goto out;
+	}
+
+	if (ref)
+		rc = setup_ref(path, ce, ref, get_tgt_name(ce));
+	else
+		rc = 0;
+	if (!rc && tgt_list)
+		rc = get_tgt_list(ce, tgt_list);
+
+out:
+	mutex_unlock(&dfs_cache_lock);
+	return rc;
+}
+
+int dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
+			     const struct nls_table *nls_codepage, int remap,
+			     const char *path,
+			     const struct dfs_cache_tgt_iterator *it)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -734,7 +774,8 @@ int __dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
 
 	mutex_lock(&dfs_cache_lock);
 
-	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path, true);
+	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path, true,
+			       false);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
@@ -745,6 +786,49 @@ int __dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
 	t = ce->ce_tgthint;
 
 	if (likely(!strncasecmp(it->it_name, t->t_name, strlen(t->t_name))))
+		goto out;
+
+	list_for_each_entry(t, &ce->ce_tlist, t_list) {
+		if (!strncasecmp(t->t_name, it->it_name, strlen(it->it_name))) {
+			ce->ce_tgthint = t;
+			cifs_dbg(FYI, "%s: new target hint: %s\n", __func__,
+				 it->it_name);
+			break;
+		}
+	}
+
+out:
+	mutex_unlock(&dfs_cache_lock);
+	return rc;
+}
+
+int dfs_cache_noreq_update_tgthint(const char *path,
+				   const struct dfs_cache_tgt_iterator *it)
+{
+	int rc;
+	struct dfs_cache_entry *ce;
+	struct dfs_cache_tgt *t;
+
+	if (!path || unlikely(!strchr(path + 1, '\\')))
+		return -EINVAL;
+	if (!it)
+		return -EINVAL;
+
+	cifs_dbg(FYI, "%s: path: %s\n", __func__, path);
+
+	mutex_lock(&dfs_cache_lock);
+
+	ce = do_dfs_cache_find(0, NULL, NULL, 0, path, true, true);
+	if (IS_ERR(ce)) {
+		rc = PTR_ERR(ce);
+		goto out;
+	}
+
+	rc = 0;
+
+	t = ce->ce_tgthint;
+
+	if (unlikely(!strncasecmp(it->it_name, t->t_name, strlen(t->t_name))))
 		goto out;
 
 	list_for_each_entry(t, &ce->ce_tlist, t_list) {
