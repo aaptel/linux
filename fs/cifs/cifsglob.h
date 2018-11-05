@@ -701,6 +701,10 @@ struct TCP_Server_Info {
 	struct delayed_work reconnect; /* reconnect workqueue job */
 	struct mutex reconnect_mutex; /* prevent simultaneous reconnects */
 	unsigned long echo_interval;
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	struct delayed_work dfscache;
+	struct mutex dfscache_mutex; /* prevent simultaneous updates */
+#endif
 };
 
 static inline unsigned int
@@ -1017,6 +1021,8 @@ struct cifs_tcon {
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	char *dfs_path;
 	bool remap:1;
+	bool need_refresh_dfscache:1;
+	struct list_head ulist; /* update list */
 #endif
 };
 
