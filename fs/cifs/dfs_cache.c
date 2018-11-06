@@ -1,20 +1,21 @@
 /*
- *  DFS referral cache routines.
+ * DFS referral cache routines.
  *
- *  Copyright (c) 2018 Paulo Alcantara <palcantara@suse.de>
+ * Copyright (c) 2018 Paulo Alcantara <palcantara@suse.de>
  *
- *  This library is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License v2 as published
- *  by the Free Software Foundation.
+ * This program is free software;  you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *  the GNU Lesser General Public License for more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY;  without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
+ * the GNU General Public License for more details.
  *
- *  You should have received a copy of the GNU Lesser General Public License
- *  along with this library; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * You should have received a copy of the GNU General Public License
+ * along with this program;  if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/rcupdate.h>
@@ -33,10 +34,7 @@
 
 #include "dfs_cache.h"
 
-/*
- * TODO: add LRU (probably from linux/list_lru.h) to limit number of DFS cache
- * entries.
- */
+/* TODO: add code to limit the number of stored DFS cache entries */
 
 #define DFS_CACHE_HTABLE_SIZE 32
 
@@ -246,6 +244,11 @@ static inline void dump_refs(const struct dfs_info3_param *refs, int numrefs)
 #define dump_refs(r, n)
 #endif
 
+/**
+ * dfs_cache_init - Initialize DFS referral cache.
+ *
+ * Return zero if initialized successfully, otherwise non-zero.
+ */
 int dfs_cache_init(void)
 {
 	int i;
@@ -271,6 +274,7 @@ static inline unsigned int cache_entry_hash(const void *data, int size)
 	return h & (DFS_CACHE_HTABLE_SIZE - 1);
 }
 
+/* Check whether second path component of @path is SYSVOL or NETLOGON */
 static inline bool is_sysvol_or_netlogon(const char *path)
 {
 	const char *s;
@@ -280,12 +284,14 @@ static inline bool is_sysvol_or_netlogon(const char *path)
 		!strncasecmp(s, "netlogon", strlen("netlogon"));
 }
 
+/* Return target hint of a DFS cache entry */
 static inline char *get_tgt_name(const struct dfs_cache_entry *ce)
 {
 	struct dfs_cache_tgt *t = ce->ce_tgthint;
 	return t ? t->t_name : ERR_PTR(-ENOENT);
 }
 
+/* Return expire time out of a new entry's TTL */
 static inline struct timespec64 get_expire_time(int ttl)
 {
 	struct timespec64 ts = {
@@ -296,6 +302,7 @@ static inline struct timespec64 get_expire_time(int ttl)
 	return timespec64_add(current_kernel_time64(), ts);
 }
 
+/* Allocate a new DFS target */
 static inline struct dfs_cache_tgt *alloc_tgt(const char *name)
 {
 	struct dfs_cache_tgt *t;
@@ -312,6 +319,10 @@ static inline struct dfs_cache_tgt *alloc_tgt(const char *name)
 	return t;
 }
 
+/*
+ * Copy DFS referral information to a cache entry and conditionally update
+ * target hint.
+ */
 static int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
 			 struct dfs_cache_entry *ce, const char *tgthint)
 {
@@ -347,6 +358,7 @@ static int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
 	return 0;
 }
 
+/* Allocate a new cache entry */
 static struct dfs_cache_entry *alloc_cache_entry(const char *path,
 						 const struct dfs_info3_param *refs,
 						 int numrefs)
@@ -375,6 +387,7 @@ static struct dfs_cache_entry *alloc_cache_entry(const char *path,
 	return ce;
 }
 
+/* Add a new DFS cache entry */
 static inline struct dfs_cache_entry *add_cache_entry(unsigned int hash,
 						      const char *path,
 						      const struct dfs_info3_param *refs,
@@ -417,6 +430,7 @@ static inline struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
 	return found ? ce : ERR_PTR(-ENOENT);
 }
 
+/* Find a DFS cache entry and optionally check prefix path against @path */
 static struct dfs_cache_entry *find_cache_entry(const char *path,
 						unsigned int *hash,
 						bool check_ppath)
@@ -459,6 +473,9 @@ static inline void destroy_slab_cache(void)
 	kmem_cache_destroy(dfs_cache_slab);
 }
 
+/**
+ * dfs_cache_destroy - destroy DFS referral cache
+ */
 void dfs_cache_destroy(void)
 {
 	mutex_lock(&dfs_cache_lock);
@@ -501,6 +518,7 @@ static inline struct dfs_cache_entry *__update_cache_entry(const char *path,
 	return ce;
 }
 
+/* Update an expired cache entry by getting a new DFS referral from server */
 static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 						  struct cifs_ses *ses,
 						  const struct nls_table *nls_codepage,
@@ -535,6 +553,7 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 	return ce;
 }
 
+/* Find, create or update a DFS cache entry */
 static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 						 struct cifs_ses *ses,
 						 const struct nls_table *nls_codepage,
@@ -631,6 +650,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 	return ce;
 }
 
+/* Set up a new DFS referral from a given cache entry */
 static int setup_ref(const char *path, const struct dfs_cache_entry *ce,
 		     struct dfs_info3_param *ref, const char *tgt)
 {
@@ -664,6 +684,7 @@ err_free_path:
 	return rc;
 }
 
+/* Return target list of a DFS cache entry */
 static int get_tgt_list(const struct dfs_cache_entry *ce,
 			struct list_head *head)
 {
@@ -703,6 +724,27 @@ err_free_it:
 	return rc;
 }
 
+/**
+ * dfs_cache_find - find a DFS cache entry
+ *
+ * If it doesn't find the cache entry, then it will get a DFS referral for @path
+ * and create a new entry.
+ *
+ * In case the cache entry exists but expired, it will get a DFS referral
+ * for @path and then update the respective cache entry.
+ *
+ * @xid:
+ * @ses:
+ * @nls_codepage:
+ * @remap:
+ * @path: path to lookup in DFS referral cache.
+ * @ref: optional DFS referral pointer.
+ * @tgt_list: optional DFS target list.
+ * @check_ppath: if longest matches should be considered
+   (e.g. by checking the prefix paths of @path against each cache entry).
+ *
+ * Return zero if the target hint was updated successfully, otherwise non-zero.
+ */
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		   const struct nls_table *nls_codepage, int remap,
 		   const char *path, struct dfs_info3_param *ref,
@@ -731,6 +773,20 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
+/**
+ * dfs_cache_noreq_find - find a DFS cache entry without sending any requests to
+ * the currently connected server.
+ *
+ * NOTE: This function will not either update a cache entry in case it was
+ * expired, or create a new cache entry if @path hasn't been found. It heavily
+ * realies on an existing cache entry.
+ *
+ * @path: path to lookup in DFS referral cache.
+ * @@ref: optional DFS referral pointer.
+ * @tgt_list: optional DFS target list.
+ *
+ * Return zero if the target hint was updated successfully, otherwise non-zero.
+ */
 int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
 			 struct list_head *tgt_list)
 {
@@ -760,6 +816,24 @@ out:
 	return rc;
 }
 
+/**
+ * dfs_cache_update_tgthint - update target hint of a DFS cache entry
+ *
+ * If it doesn't find the cache entry, then it will get a DFS referral for @path
+ * and create a new entry.
+ *
+ * In case the cache entry exists but expired, it will get a DFS referral
+ * for @path and then update the respective cache entry.
+ *
+ * @xid:
+ * @ses:
+ * @nls_codepage:
+ * @remap:
+ * @path: path to lookup in DFS referral cache.
+ * @it: DFS target iterator
+ *
+ * Return zero if the target hint was updated successfully, otherwise non-zero.
+ */
 int dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
 			     const struct nls_table *nls_codepage, int remap,
 			     const char *path,
@@ -806,6 +880,20 @@ out:
 	return rc;
 }
 
+/**
+ * dfs_cache_noreq_update_tgthint - update target hint of a DFS cache entry
+ * without sending any requests to the currently connected server.
+ *
+ * NOTE: This function will not either update a cache entry in case it was
+ * expired, or create a new cache entry if @path hasn't been found. It heavily
+ * realies on an existing cache entry.
+ *
+ * @path: path to lookup in DFS referral cache.
+ * @it: target iterator which contains the target hint to update the cache
+ * entry with.
+ *
+ * Return zero if the target hint was updated successfully, otherwise non-zero.
+ */
 int dfs_cache_noreq_update_tgthint(const char *path,
 				   const struct dfs_cache_tgt_iterator *it)
 {
@@ -849,6 +937,16 @@ out:
 	return rc;
 }
 
+/**
+ * dfs_cache_get_tgt_referral - returns a DFS referral (@ref) from a given
+ * target iterator (@it).
+ *
+ * @path: path to lookup in DFS referral cache.
+ * @it: DFS target iterator.
+ * @ref: DFS referral pointer to set up the gathered information.
+ *
+ * Return zero if the DFS referral was set up correctly, otherwise non-zero.
+ */
 int dfs_cache_get_tgt_referral(const char *path,
 			       const struct dfs_cache_tgt_iterator *it,
 			       struct dfs_info3_param *ref)

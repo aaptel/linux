@@ -1,21 +1,23 @@
 /*
- *  DFS referral cache routines.
+ * DFS referral cache routines.
  *
- *  Copyright (c) 2018 Paulo Alcantara <palcantara@suse.de>
+ * Copyright (c) 2018 Paulo Alcantara <palcantara@suse.de>
  *
- *  This library is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License v2 as published
- *  by the Free Software Foundation.
+ * This program is free software;  you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *  the GNU Lesser General Public License for more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY;  without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
+ * the GNU General Public License for more details.
  *
- *  You should have received a copy of the GNU Lesser General Public License
- *  along with this library; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * You should have received a copy of the GNU General Public License
+ * along with this program;  if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
+
 #ifndef _CIFS_DFS_CACHE_H
 #define _CIFS_DFS_CACHE_H
 
@@ -28,22 +30,23 @@ struct dfs_cache_tgt_iterator {
 	struct list_head it_list;
 };
 
-int dfs_cache_init(void);
-void dfs_cache_destroy(void);
+extern int dfs_cache_init(void);
+extern void dfs_cache_destroy(void);
 extern const struct file_operations dfscache_proc_fops;
 
-int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
-		   const struct nls_table *nls_codepage, int remap,
-		   const char *path, struct dfs_info3_param *ref,
-		   struct list_head *tgt_list, bool check_ppath);
-int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
-			 struct list_head *tgt_list);
-int dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
-			     const struct nls_table *nls_codepage, int remap,
-			     const char *path,
-			     const struct dfs_cache_tgt_iterator *it);
-int dfs_cache_noreq_update_tgthint(const char *path,
-				   const struct dfs_cache_tgt_iterator *it);
+extern int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
+			  const struct nls_table *nls_codepage, int remap,
+			  const char *path, struct dfs_info3_param *ref,
+			  struct list_head *tgt_list, bool check_ppath);
+extern int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
+				struct list_head *tgt_list);
+extern int dfs_cache_update_tgthint(const unsigned int xid,
+				    struct cifs_ses *ses,
+				    const struct nls_table *nls_codepage,
+				    int remap, const char *path,
+				    const struct dfs_cache_tgt_iterator *it);
+extern int dfs_cache_noreq_update_tgthint(const char *path,
+					  const struct dfs_cache_tgt_iterator *it);
 
 static inline struct dfs_cache_tgt_iterator *
 dfs_cache_get_next_tgt(struct list_head *head,
