@@ -48,6 +48,10 @@ extern int dfs_cache_update_tgthint(const unsigned int xid,
 extern int dfs_cache_noreq_update_tgthint(const char *path,
 					  const struct dfs_cache_tgt_iterator *it);
 
+extern int dfs_cache_get_tgt_referral(const char *path,
+				      const struct dfs_cache_tgt_iterator *it,
+				      struct dfs_info3_param *ref);
+
 static inline struct dfs_cache_tgt_iterator *
 dfs_cache_get_next_tgt(struct list_head *head,
 		       struct dfs_cache_tgt_iterator *it)
@@ -82,9 +86,5 @@ dfs_cache_get_tgt_name(const struct dfs_cache_tgt_iterator *it)
 {
 	return it ? it->it_name : NULL;
 }
-
-int dfs_cache_get_tgt_referral(const char *path,
-			       const struct dfs_cache_tgt_iterator *it,
-			       struct dfs_info3_param *ref);
 
 #endif /* _CIFS_DFS_CACHE_H */
