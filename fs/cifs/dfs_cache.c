@@ -125,7 +125,7 @@ static int dfscache_proc_show(struct seq_file *m, void *v)
 	int bucket;
 	struct dfs_cache_entry *ce;
 	struct dfs_cache_tgt *t;
-	cifs_dbg(VFS, "XXX in proc read");
+
 	seq_puts(m, "DFS cache\n---------\n");
 
 	mutex_lock(&dfs_cache_lock);
@@ -158,19 +158,15 @@ static int dfscache_proc_show(struct seq_file *m, void *v)
 static ssize_t dfscache_proc_write(struct file *file, const char __user *buffer,
 				   size_t count, loff_t *ppos)
 {
-	char c[2] = {0};
+	char c;
 	int rc;
-	cifs_dbg(VFS, "XXX in proc write");
-	rc = get_user(c[0], buffer);
-	if (rc) {
-		cifs_dbg(FYI, "rc=%d", rc);
-		return rc;
-	}
 
-	if (c[0] != '0') {
-		cifs_dbg(FYI, "rc=EINVAL");
+	rc = get_user(c, buffer);
+	if (rc)
+		return rc;
+
+	if (c != '0')
 		return -EINVAL;
-	}
 
 	cifs_dbg(FYI, "clearing dfs cache");
 	mutex_lock(&dfs_cache_lock);
@@ -430,7 +426,10 @@ static inline struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
 	return found ? ce : ERR_PTR(-ENOENT);
 }
 
-/* Find a DFS cache entry and optionally check prefix path against @path */
+/*
+ * Find a DFS cache entry and optionally check prefix path against @path.
+ * Return ERR_PTR(-ENOENT) if the entry is not found.
+ */
 static struct dfs_cache_entry *find_cache_entry(const char *path,
 						unsigned int *hash,
 						bool check_ppath)
@@ -727,23 +726,26 @@ err_free_it:
 /**
  * dfs_cache_find - find a DFS cache entry
  *
- * If it doesn't find the cache entry, then it will get a DFS referral for @path
- * and create a new entry.
+ * If it doesn't find the cache entry, then it will get a DFS referral
+ * for @path and create a new entry.
  *
  * In case the cache entry exists but expired, it will get a DFS referral
  * for @path and then update the respective cache entry.
  *
- * @xid:
- * @ses:
- * @nls_codepage:
- * @remap:
+ * These parameters are passed down to the get_dfs_refer() call if it
+ * needs to be issued:
+ * @xid: syscall xid
+ * @ses: smb session to issue the request on
+ * @nls_codepage: charset conversion
+ * @remap: path character remapping type
  * @path: path to lookup in DFS referral cache.
- * @ref: optional DFS referral pointer.
- * @tgt_list: optional DFS target list.
- * @check_ppath: if longest matches should be considered
-   (e.g. by checking the prefix paths of @path against each cache entry).
  *
- * Return zero if the target hint was updated successfully, otherwise non-zero.
+ * @ref: when non-NULL, store single DFS referral result in it.
+ * @tgt_list: when non-NULL, store complete DFS target list in it.
+ * @check_ppath: when true, do longest-match of prefix paths of @path
+ * against each cache entry.
+ *
+ * Return zero if the target was found, otherwise non-zero.
  */
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		   const struct nls_table *nls_codepage, int remap,
@@ -777,15 +779,17 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
  * dfs_cache_noreq_find - find a DFS cache entry without sending any requests to
  * the currently connected server.
  *
- * NOTE: This function will not either update a cache entry in case it was
- * expired, or create a new cache entry if @path hasn't been found. It heavily
- * realies on an existing cache entry.
+ * NOTE: This function will neither update a cache entry in case it was
+ * expired, nor create a new cache entry if @path hasn't been found. It heavily
+ * relies on an existing cache entry.
  *
- * @path: path to lookup in DFS referral cache.
- * @@ref: optional DFS referral pointer.
- * @tgt_list: optional DFS target list.
+ * @path: path to lookup in the DFS referral cache.
+ * @ref: when non-NULL, store single DFS referral result in it.
+ * @tgt_list: when non-NULL, store complete DFS target list in it.
  *
- * Return zero if the target hint was updated successfully, otherwise non-zero.
+ * Return 0 if successful.
+ * Return -ENOENT if the entry was not found.
+ * Return non-zero for other errors.
  */
 int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
 			 struct list_head *tgt_list)
@@ -825,10 +829,10 @@ out:
  * In case the cache entry exists but expired, it will get a DFS referral
  * for @path and then update the respective cache entry.
  *
- * @xid:
- * @ses:
- * @nls_codepage:
- * @remap:
+ * @xid: syscall id
+ * @ses: smb session
+ * @nls_codepage: charset conversion
+ * @remap: type of character remapping for paths
  * @path: path to lookup in DFS referral cache.
  * @it: DFS target iterator
  *
@@ -884,9 +888,9 @@ out:
  * dfs_cache_noreq_update_tgthint - update target hint of a DFS cache entry
  * without sending any requests to the currently connected server.
  *
- * NOTE: This function will not either update a cache entry in case it was
- * expired, or create a new cache entry if @path hasn't been found. It heavily
- * realies on an existing cache entry.
+ * NOTE: This function will neither update a cache entry in case it was
+ * expired, nor create a new cache entry if @path hasn't been found. It heavily
+ * relies on an existing cache entry.
  *
  * @path: path to lookup in DFS referral cache.
  * @it: target iterator which contains the target hint to update the cache
