@@ -4154,14 +4154,14 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-static inline int get_next_dfs_tgt_iterator(const char *tree,
+static inline int get_next_dfs_tgt_iterator(const char *path,
 					    struct list_head *tgt_list,
 					    struct dfs_cache_tgt_iterator **it)
 {
 	int rc = 0;
 
 	if (list_empty(tgt_list)) {
-		rc = dfs_cache_noreq_find(tree, NULL, tgt_list);
+		rc = dfs_cache_noreq_find(path, NULL, tgt_list);
 		if (!rc)
 			*it = dfs_cache_get_tgt_iterator(tgt_list);
 	} else {
@@ -4171,7 +4171,7 @@ static inline int get_next_dfs_tgt_iterator(const char *tree,
 }
 
 static int mount_get_next_dfs_tgt(struct cifs_sb_info *cifs_sb,
-				  const char *tree,
+				  const char *path,
 				  struct list_head *tgt_list,
 				  struct dfs_cache_tgt_iterator **tgt_it)
 {
@@ -4181,7 +4181,7 @@ static int mount_get_next_dfs_tgt(struct cifs_sb_info *cifs_sb,
 		return -EOPNOTSUPP;
 
 	/* Get next DFS target available for client failover */
-	rc = get_next_dfs_tgt_iterator(tree, tgt_list, tgt_it);
+	rc = get_next_dfs_tgt_iterator(path, tgt_list, tgt_it);
 	if (rc)
 		return rc;
 
@@ -4193,9 +4193,10 @@ static int mount_get_next_dfs_tgt(struct cifs_sb_info *cifs_sb,
 	return 0;
 }
 
-static int mount_setup_dfs_tgt_conn(const char *tree,
+static int mount_setup_dfs_tgt_conn(const char *path,
 				    const struct dfs_cache_tgt_iterator *tgt_it,
 				    struct cifs_sb_info *cifs_sb,
+				    struct smb_vol *vol,
 				    unsigned int *xid,
 				    struct TCP_Server_Info **server,
 				    struct cifs_ses **ses,
@@ -4204,18 +4205,17 @@ static int mount_setup_dfs_tgt_conn(const char *tree,
 	int rc;
 	struct dfs_info3_param ref = {0};
 	char *mdata = NULL, *fake_devname = NULL;
-	struct smb_vol fake_vol = {0};
 
-	cifs_dbg(FYI, "%s: tree name: %s\n", __func__, tree);
+	cifs_dbg(FYI, "%s: dfs path: %s\n", __func__, path);
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
 		return -EOPNOTSUPP;
 
-	rc = dfs_cache_get_tgt_referral(tree, tgt_it, &ref);
+	rc = dfs_cache_get_tgt_referral(path, tgt_it, &ref);
 	if (rc)
 		return rc;
 
-	mdata = cifs_compose_mount_options(cifs_sb->mountdata, tree, &ref,
+	mdata = cifs_compose_mount_options(cifs_sb->mountdata, path, &ref,
 					   &fake_devname);
 	free_dfs_info_param(&ref);
 
@@ -4223,24 +4223,23 @@ static int mount_setup_dfs_tgt_conn(const char *tree,
 		rc = PTR_ERR(mdata);
 		mdata = NULL;
 	} else {
-		memset(&fake_vol, 0, sizeof(fake_vol));
-		rc = cifs_setup_volume_info(&fake_vol, mdata, fake_devname, false);
+		cleanup_volume_info_contents(vol);
+		rc = cifs_setup_volume_info(vol, mdata, fake_devname, false);
 	}
-
-	kfree(mdata);
 	kfree(fake_devname);
+	kfree(cifs_sb->mountdata);
+	cifs_sb->mountdata = mdata;
 
 	if (!rc) {
 		mount_put_conns(cifs_sb, *xid, *server, *ses, *tcon);
-		rc = mount_get_conns(&fake_vol, cifs_sb, xid, server, ses,
-				     tcon);
-		cleanup_volume_info_contents(&fake_vol);
+		rc = mount_get_conns(vol, cifs_sb, xid, server, ses, tcon);
 	}
 	return rc;
 }
 
-static int mount_do_dfs_failover(const char *tree,
+static int mount_do_dfs_failover(const char *path,
 				 struct cifs_sb_info *cifs_sb,
+				 struct smb_vol *vol,
 				 unsigned int *xid,
 				 struct TCP_Server_Info **server,
 				 struct cifs_ses **ses,
@@ -4252,12 +4251,12 @@ static int mount_do_dfs_failover(const char *tree,
 
 	for (;;) {
 		/* Get next DFS target server - if any */
-		rc = mount_get_next_dfs_tgt(cifs_sb, tree, &tgt_list,
+		rc = mount_get_next_dfs_tgt(cifs_sb, path, &tgt_list,
 					    &tgt_it);
 		if (rc)
 			break;
 		/* Connect to next DFS target */
-		rc = mount_setup_dfs_tgt_conn(tree, tgt_it, cifs_sb, xid,
+		rc = mount_setup_dfs_tgt_conn(path, tgt_it, cifs_sb, vol, xid,
 					      server, ses, tcon);
 		if (!rc || rc == -EACCES || rc == -EOPNOTSUPP)
 			break;
@@ -4269,7 +4268,7 @@ static int mount_do_dfs_failover(const char *tree,
 		 * server we successfully connected to.
 		 */
 		rc = dfs_cache_update_tgthint(*xid, *ses, cifs_sb->local_nls,
-					      cifs_remap(cifs_sb), tree,
+					      cifs_remap(cifs_sb), path,
 					      tgt_it);
 	}
 	dfs_cache_free_tgts(&tgt_list);
@@ -4432,7 +4431,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	struct TCP_Server_Info *server;
 	char *fullpath = NULL;
 	char *old_mountdata;
-	char *tree;
+	char *path;
 	int count;
 
 	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
@@ -4477,16 +4476,16 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	}
 
 	if (rc) {
-		tree = cifs_sb->origin_unc + 1;
-
 		if (rc == -EACCES || rc == -EOPNOTSUPP)
 			goto error;
 		/* Perform DFS failover to any other DFS targets */
-		rc = mount_do_dfs_failover(tree, cifs_sb, &xid, &server, &ses,
-					   &tcon);
+		rc = mount_do_dfs_failover(cifs_sb->origin_unc + 1, cifs_sb,
+					   vol, &xid, &server, &ses, &tcon);
 		if (rc)
 			goto error;
 	}
+
+	path = fullpath + 1;
 
 	for (count = 1; ;) {
 		if (!rc && tcon) {
@@ -4518,13 +4517,11 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 					     &tcon);
 		}
 		if (rc) {
-			tree = fullpath + 1;
-
 			if (rc == -EACCES || rc == -EOPNOTSUPP)
 				goto error;
 			/* Perform DFS failover to any other DFS targets */
-			rc = mount_do_dfs_failover(tree, cifs_sb, &xid, &server,
-						   &ses, &tcon);
+			rc = mount_do_dfs_failover(path, cifs_sb, vol, &xid,
+						   &server, &ses, &tcon);
 			if (rc)
 				goto error;
 		}
