@@ -294,7 +294,6 @@ static inline struct timespec64 get_expire_time(int ttl)
 		.tv_sec = ttl,
 		.tv_nsec = 0,
 	};
-
 	return timespec64_add(current_kernel_time64(), ts);
 }
 
@@ -427,7 +426,8 @@ static inline struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
 }
 
 /*
- * Find a DFS cache entry and optionally check prefix path against @path.
+ * Find a DFS cache entry in hash table and optionally check prefix path against
+ * @path.
  * Return ERR_PTR(-ENOENT) if the entry is not found.
  */
 static struct dfs_cache_entry *find_cache_entry(const char *path,
@@ -441,6 +441,7 @@ static struct dfs_cache_entry *find_cache_entry(const char *path,
 	len = strlen(path);
 
 	if (!check_ppath) {
+		/* Use whole path components in the match */
 		*hash = cache_entry_hash(path, len);
 		return __find_cache_entry(*hash, path, len);
 	}
@@ -452,6 +453,10 @@ static struct dfs_cache_entry *find_cache_entry(const char *path,
 		return __find_cache_entry(*hash, path, len);
 	}
 
+	/*
+	 * Check each prefix path component against @path and find longest
+	 * match.
+	 */
 	--s;
 	q = path + len - 1;
 
@@ -532,6 +537,7 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 
 	cifs_dbg(FYI, "%s: update expired cache entry\n", __func__);
 
+	/* Check if caller provided enough parameters to update expired entry */
 	if (!ses || !ses->server || !ses->server->ops->get_dfs_refer)
 		return ERR_PTR(-ETIME);
 	if (unlikely(!nls_codepage))
@@ -552,7 +558,12 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 	return ce;
 }
 
-/* Find, create or update a DFS cache entry */
+/*
+ * Find, create or update a DFS cache entry.
+ *
+ * If the entry wasn't found, it will create a new one. Or if it was found but
+ * expired, then it will update the entry accordingly.
+ */
 static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 						 struct cifs_ses *ses,
 						 const struct nls_table *nls_codepage,
@@ -573,13 +584,17 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 		if (IS_ERR(ce)) {
 			cifs_dbg(FYI, "%s: cache miss\n", __func__);
 			/*
-			 * If noreq is set, no requests will be sent to the
+			 * If @noreq is set, no requests will be sent to the
 			 * server for either updating or getting a new DFS
 			 * referral.
 			 */
 			if (noreq)
 				break;
-
+			/*
+			 * No cache entry was found, so check for valid
+			 * parameters that will be neccessary to get a new DFS
+			 * referral and then create new cache entry.
+			 */
 			if (!ses || !ses->server ||
 			    !ses->server->ops->get_dfs_refer) {
 				ce = ERR_PTR(-ENOSYS);
@@ -618,7 +633,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 
 		dump_ce(ce);
 
-		/* Just return the found cache entry in case noreq is set */
+		/* Just return the found cache entry in case @noreq is set */
 		if (noreq)
 			break;
 
@@ -639,7 +654,10 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 		if (ce->ce_srvtype == DFS_TYPE_ROOT ||
 		    is_sysvol_or_netlogon(path) || !interlink)
 			break;
-
+		/*
+		 * The DFS link (interlink) points to another DFS namespace, so
+		 * just follow it.
+		 */
 		path = get_tgt_name(ce);
 		if (unlikely(IS_ERR(path))) {
 			ce = ERR_CAST(path);
