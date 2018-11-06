@@ -4465,8 +4465,10 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	old_mountdata = cifs_sb->mountdata;
 	(void)expand_dfs_referral(xid, ses, vol, cifs_sb, false);
 
-	if (cifs_sb->mountdata == NULL)
+	if (cifs_sb->mountdata == NULL) {
+		rc = -ENOENT;
 		goto error;
+	}
 
 	if (cifs_sb->mountdata != old_mountdata) {
 		/* If we were redirected, reconnect to new target server */
@@ -4512,7 +4514,8 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 
 		if (cifs_sb->mountdata != old_mountdata) {
 			mount_put_conns(cifs_sb, xid, server, ses, tcon);
-			rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
+			rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses,
+					     &tcon);
 		}
 		if (rc) {
 			tree = fullpath + 1;
