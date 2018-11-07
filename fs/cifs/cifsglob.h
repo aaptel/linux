@@ -1020,7 +1020,7 @@ struct cifs_tcon {
 	/* BB add field for back pointer to sb struct(s)? */
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	char *dfs_path;
-	bool remap:1;
+	int remap:2;
 	bool need_refresh_dfscache:1;
 	struct list_head ulist; /* update list */
 #endif

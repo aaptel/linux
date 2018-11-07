@@ -127,7 +127,7 @@ cifs_build_devname(char *nodename, const char *prepath)
  * @sb_mountdata:	parent/root DFS mount options (template)
  * @fullpath:		full path in UNC format
  * @ref:		server's referral
- * @devname:		pointer for saving device name
+ * @devname:		optional pointer for saving device name
  *
  * creates mount options for submount based on template options sb_mountdata
  * and replacing unc,ip,prefixpath options with ones we've got form ref_unc.
@@ -255,20 +255,25 @@ static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
 {
 	struct vfsmount *mnt;
 	char *mountdata;
+	char *devname;
+
+	devname = kstrndup(fullpath, strlen(fullpath), GFP_KERNEL);
+	if (!devname)
+		return ERR_PTR(-ENOMEM);
+
+	cifs_dbg(FYI, "%s: devname: %s\n", __func__, devname);
 
 	/* strip first '\' from fullpath */
 	mountdata = cifs_compose_mount_options(cifs_sb->mountdata,
 					       fullpath + 1, ref, NULL);
 	if (IS_ERR(mountdata)) {
-		mnt = (struct vfsmount *)mountdata;
-		mountdata = NULL;
-		goto out;
+		kfree(devname);
+		return (struct vfsmount *)mountdata;
 	}
 
-	mnt = vfs_submount(mntpt, &cifs_fs_type, fullpath, mountdata);
-
-out:
+	mnt = vfs_submount(mntpt, &cifs_fs_type, devname, mountdata);
 	kfree(mountdata);
+	kfree(devname);
 	return mnt;
 }
 
@@ -323,7 +328,7 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 
 	root_path = kstrndup(full_path, strlen(full_path), GFP_KERNEL);
 	if (!root_path) {
-		mnt = ERR_PTR(-EINVAL);
+		mnt = ERR_PTR(-ENOMEM);
 		goto free_full_path;
 	}
 	c = strchr(root_path + 2, '\\');
