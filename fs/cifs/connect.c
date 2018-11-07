@@ -4218,6 +4218,11 @@ static int mount_setup_dfs_tgt_conn(const char *path,
 	kfree(fake_devname);
 
 	if (!rc) {
+		/*
+		 * We use a 'fake_vol' here because we need pass it down to the
+		 * mount_{get,put} functions to test connection against new DFS
+		 * targets.
+		 */
 		mount_put_conns(cifs_sb, *xid, *server, *ses, *tcon);
 		rc = mount_get_conns(&fake_vol, cifs_sb, xid, server, ses, tcon);
 		if (!rc) {
@@ -4233,9 +4238,11 @@ static int mount_setup_dfs_tgt_conn(const char *path,
 				rc = -ENOMEM;
 			} else {
 				snprintf(vol->UNC, len, "\\%s", unc);
-				kfree(vol->prepath);
-				vol->prepath = fake_vol.prepath;
-				fake_vol.prepath = NULL;
+				if (fake_vol.prepath) {
+					kfree(vol->prepath);
+					vol->prepath = fake_vol.prepath;
+					fake_vol.prepath = NULL;
+				}
 			}
 		}
 	}
