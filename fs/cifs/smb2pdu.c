@@ -190,15 +190,15 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 	struct dfs_cache_tgt_iterator *it = NULL;
 	char tree[MAX_TREE_SIZE + 1];
 
-	if (unlikely(!tcon->dfs_path)) {
-		WARN_ON_ONCE(!tcon->dfs_path);
-		return -EINVAL;
-	}
-
 	if (tcon->ipc) {
 		snprintf(tree, sizeof(tree), "\\\\%s\\IPC$",
 			 tcon->ses->server->hostname);
 		return SMB2_tcon(0, tcon->ses, tree, tcon, nlsc);
+	}
+
+	if (unlikely(!tcon->dfs_path)) {
+		WARN_ON_ONCE(!tcon->dfs_path);
+		return -EINVAL;
 	}
 
 	rc = dfs_cache_noreq_find(tcon->dfs_path + 1, NULL, &list);

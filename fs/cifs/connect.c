@@ -357,7 +357,6 @@ static inline struct cifs_sb_info *find_super_by_tcp(struct TCP_Server_Info *ser
 		.server = server,
 		.cifs_sb = NULL,
 	};
-
 	iterate_supers_type(&cifs_fs_type, super_cb, &d);
 	return d.cifs_sb ? d.cifs_sb : ERR_PTR(-ENOENT);
 }
@@ -496,10 +495,6 @@ cifs_reconnect(struct TCP_Server_Info *server)
 		ses->need_reconnect = true;
 		list_for_each(tmp2, &ses->tcon_list) {
 			tcon = list_entry(tmp2, struct cifs_tcon, tcon_list);
-			cifs_dbg(FYI, "%s: tcon - tree name: %s\n", __func__,
-				 tcon->treeName);
-			cifs_dbg(FYI, "%s: tcon - dfs path: %s\n", __func__,
-				 tcon->dfs_path);
 			tcon->need_reconnect = true;
 		}
 		if (ses->tcon_ipc)
@@ -2742,18 +2737,6 @@ cifs_setup_ipc(struct cifs_ses *ses, struct smb_vol *volume_info,
 	/* cannot fail */
 	nls_codepage = load_nls_default();
 
-#ifdef CONFIG_CIFS_DFS_UPCALL
-	if (likely(cifs_sb && cifs_sb->origin_fullpath)) {
-		tcon->dfs_path = kstrndup(cifs_sb->origin_fullpath,
-					  strlen(cifs_sb->origin_fullpath),
-					  GFP_KERNEL);
-		if (!tcon->dfs_path) {
-			rc = -ENOMEM;
-			tconInfoFree(tcon);
-			goto out;
-		}
-	}
-#endif
 	xid = get_xid();
 	tcon->ses = ses;
 	tcon->ipc = true;
@@ -4115,19 +4098,21 @@ build_unc_path_to_root(const struct smb_vol *vol,
 static int
 expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		    struct smb_vol *volume_info, struct cifs_sb_info *cifs_sb,
-		    bool use_origin)
+		    int check_prefix)
 {
 	int rc;
 	struct dfs_info3_param referral = {0};
-	char *ref_path = NULL, *mdata = NULL;
+	char *full_path = NULL, *ref_path = NULL, *mdata = NULL;
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
 		return -EREMOTE;
 
-	if (use_origin)
-		ref_path = cifs_sb->origin_fullpath + 1;
-	else
-		ref_path = volume_info->UNC + 1;
+	full_path = build_unc_path_to_root(volume_info, cifs_sb, true);
+	if (IS_ERR(full_path))
+		return PTR_ERR(full_path);
+
+	/* For DFS paths, skip the first '\' of the UNC */
+	ref_path = check_prefix ? full_path + 1 : volume_info->UNC + 1;
 
 	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
 			    ref_path, &referral, NULL, false);
@@ -4135,8 +4120,8 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		char *fake_devname = NULL;
 
 		mdata = cifs_compose_mount_options(cifs_sb->mountdata,
-						   cifs_sb->origin_fullpath + 1,
-						   &referral, &fake_devname);
+						   full_path + 1, &referral,
+						   &fake_devname);
 		free_dfs_info_param(&referral);
 
 		if (IS_ERR(mdata)) {
@@ -4151,6 +4136,7 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		kfree(cifs_sb->mountdata);
 		cifs_sb->mountdata = mdata;
 	}
+	kfree(full_path);
 	return rc;
 }
 
@@ -4205,6 +4191,7 @@ static int mount_setup_dfs_tgt_conn(const char *path,
 	int rc;
 	struct dfs_info3_param ref = {0};
 	char *mdata = NULL, *fake_devname = NULL;
+	struct smb_vol fake_vol = {0};
 
 	cifs_dbg(FYI, "%s: dfs path: %s\n", __func__, path);
 
@@ -4223,23 +4210,43 @@ static int mount_setup_dfs_tgt_conn(const char *path,
 		rc = PTR_ERR(mdata);
 		mdata = NULL;
 	} else {
-		cleanup_volume_info_contents(vol);
-		rc = cifs_setup_volume_info(vol, mdata, fake_devname, false);
+		cifs_dbg(FYI, "%s: fake_devname: %s\n", __func__, fake_devname);
+		rc = cifs_setup_volume_info(&fake_vol, mdata, fake_devname,
+					    false);
 	}
+	kfree(mdata);
 	kfree(fake_devname);
-	kfree(cifs_sb->mountdata);
-	cifs_sb->mountdata = mdata;
 
 	if (!rc) {
 		mount_put_conns(cifs_sb, *xid, *server, *ses, *tcon);
-		rc = mount_get_conns(vol, cifs_sb, xid, server, ses, tcon);
+		rc = mount_get_conns(&fake_vol, cifs_sb, xid, server, ses, tcon);
+		if (!rc) {
+			/* Were were able to connect to new target server.
+			 * Update current volume info with new UNC path.
+			 */
+			const char *unc = dfs_cache_get_tgt_name(tgt_it);
+			int len = strlen(unc) + 2;
+
+			kfree(vol->UNC);
+			vol->UNC = kmalloc(len, GFP_KERNEL);
+			if (!vol->UNC) {
+				rc = -ENOMEM;
+			} else {
+				snprintf(vol->UNC, len, "\\%s", unc);
+				kfree(vol->prepath);
+				vol->prepath = fake_vol.prepath;
+				fake_vol.prepath = NULL;
+			}
+		}
 	}
+	cleanup_volume_info_contents(&fake_vol);
 	return rc;
 }
 
 static int mount_do_dfs_failover(const char *path,
 				 struct cifs_sb_info *cifs_sb,
 				 struct smb_vol *vol,
+				 struct cifs_ses *root_ses,
 				 unsigned int *xid,
 				 struct TCP_Server_Info **server,
 				 struct cifs_ses **ses,
@@ -4267,12 +4274,12 @@ static int mount_do_dfs_failover(const char *path,
 		 * Update DFS target hint in DFS referral cache with the target
 		 * server we successfully connected to.
 		 */
-		rc = dfs_cache_update_tgthint(*xid, *ses, cifs_sb->local_nls,
+		rc = dfs_cache_update_tgthint(*xid, root_ses ? root_ses : *ses,
+					      cifs_sb->local_nls,
 					      cifs_remap(cifs_sb), path,
 					      tgt_it);
 	}
 	dfs_cache_free_tgts(&tgt_list);
-
 	return rc;
 }
 #endif
@@ -4427,33 +4434,22 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	int rc = 0;
 	unsigned int xid;
 	struct cifs_ses *ses;
-	struct cifs_tcon *tcon;
+	struct cifs_tcon *tcon, *root_tcon;
 	struct TCP_Server_Info *server;
-	char *fullpath = NULL;
+	char *root_path = NULL, *full_path = NULL;
 	char *old_mountdata;
-	char *path;
 	int count;
 
 	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
 	if (rc == -EACCES)
 		goto error;
 
-	/*
-	 * Save origin UNC and full path to be used during reconnect for DFS
-	 * failover.
-	 */
-	cifs_sb->origin_unc = build_unc_path_to_root(vol, cifs_sb, false);
-	if (!cifs_sb->origin_unc) {
-		rc = -ENOMEM;
+	root_path = build_unc_path_to_root(vol, cifs_sb, false);
+	if (IS_ERR(root_path)) {
+		rc = PTR_ERR(root_path);
 		goto error;
 	}
 
-	fullpath = build_unc_path_to_root(vol, cifs_sb, true);
-	if (!fullpath) {
-		rc = -ENOMEM;
-		goto error;
-	}
-	cifs_sb->origin_fullpath = fullpath;
 	/*
 	 * Perform an unconditional check for whether there are DFS
 	 * referrals for this path without prefix, to provide support
@@ -4465,6 +4461,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	(void)expand_dfs_referral(xid, ses, vol, cifs_sb, false);
 
 	if (cifs_sb->mountdata == NULL) {
+		kfree(root_path);
 		rc = -ENOENT;
 		goto error;
 	}
@@ -4476,16 +4473,31 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	}
 
 	if (rc) {
-		if (rc == -EACCES || rc == -EOPNOTSUPP)
-			goto error;
 		/* Perform DFS failover to any other DFS targets */
-		rc = mount_do_dfs_failover(cifs_sb->origin_unc + 1, cifs_sb,
-					   vol, &xid, &server, &ses, &tcon);
-		if (rc)
+		rc = mount_do_dfs_failover(root_path + 1, cifs_sb, vol, NULL,
+					   &xid, &server, &ses, &tcon);
+		if (rc) {
+			kfree(root_path);
 			goto error;
+		}
 	}
+	/*
+	 * Save root tcon for additional DFS requests to update or create a new
+	 * DFS cache entry, or even perform DFS failover.
+	 */
+	spin_lock(&cifs_tcp_ses_lock);
+	tcon->tc_count++;
+	tcon->dfs_path = root_path;
+	tcon->remap = cifs_remap(cifs_sb);
+	spin_unlock(&cifs_tcp_ses_lock);
 
-	path = fullpath + 1;
+	root_tcon = tcon;
+
+	full_path = build_unc_path_to_root(vol, cifs_sb, true);
+	if (!full_path) {
+		rc = -ENOMEM;
+		goto error;
+	}
 
 	for (count = 1; ;) {
 		if (!rc && tcon) {
@@ -4493,7 +4505,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 			if (!rc)
 				break; /* not a DFS link */
 			if (rc != -EREMOTE)
-				goto error;
+				break;
 		}
 		/*
 		 * BB: when we implement proper loop detection,
@@ -4503,13 +4515,14 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		 */
 		if (count++ > MAX_NESTED_LINKS) {
 			rc = -ELOOP;
-			goto error;
+			break;
 		}
 
 		old_mountdata = cifs_sb->mountdata;
-		rc = expand_dfs_referral(xid, ses, vol, cifs_sb, true);
+		rc = expand_dfs_referral(xid, root_tcon->ses, vol, cifs_sb,
+					 true);
 		if (rc)
-			goto error;
+			break;
 
 		if (cifs_sb->mountdata != old_mountdata) {
 			mount_put_conns(cifs_sb, xid, server, ses, tcon);
@@ -4520,27 +4533,44 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 			if (rc == -EACCES || rc == -EOPNOTSUPP)
 				goto error;
 			/* Perform DFS failover to any other DFS targets */
-			rc = mount_do_dfs_failover(path, cifs_sb, vol, &xid,
+			rc = mount_do_dfs_failover(full_path + 1, cifs_sb, vol,
+						   root_tcon->ses, &xid,
 						   &server, &ses, &tcon);
 			if (rc)
-				goto error;
+				break;
 		}
 	}
+	if (count == 1) {
+		spin_lock(&cifs_tcp_ses_lock);
+		root_tcon->tc_count--;
+		spin_unlock(&cifs_tcp_ses_lock);
+	} else {
+		cifs_put_tcon(root_tcon);
+	}
+
+	if (rc)
+		goto error;
 
 	free_xid(xid);
 
-	tcon->dfs_path = kstrndup(fullpath, strlen(fullpath), GFP_KERNEL);
+	cifs_sb->origin_fullpath = full_path;
+
+	spin_lock(&cifs_tcp_ses_lock);
+	/* Save full path in new tcon to do failover when reconnecting tcons */
+	tcon->dfs_path = kstrndup(full_path, strlen(full_path), GFP_KERNEL);
 	if (!tcon->dfs_path) {
+		spin_unlock(&cifs_tcp_ses_lock);
 		rc = -ENOMEM;
 		goto error;
 	}
 	tcon->remap = cifs_remap(cifs_sb);
+	spin_unlock(&cifs_tcp_ses_lock);
 
 	return mount_setup_tlink(cifs_sb, ses, tcon);
 
 error:
 	mount_put_conns(cifs_sb, xid, server, ses, tcon);
-	kfree(fullpath);
+	kfree(full_path);
 	return rc;
 }
 #endif
@@ -4769,7 +4799,6 @@ cifs_umount(struct cifs_sb_info *cifs_sb)
 	kfree(cifs_sb->mountdata);
 	kfree(cifs_sb->prepath);
 #ifdef CONFIG_CIFS_DFS_UPCALL
-	kfree(cifs_sb->origin_unc);
 	kfree(cifs_sb->origin_fullpath);
 #endif
 	call_rcu(&cifs_sb->rcu, delayed_free);
