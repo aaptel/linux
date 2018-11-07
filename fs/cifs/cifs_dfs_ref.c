@@ -257,11 +257,15 @@ static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
 	char *mountdata;
 	char *devname;
 
+	/*
+	 * Always pass down the DFS full path to smb3_do_mount() so we can it
+	 * later for i.e. client target failover.
+	 */
 	devname = kstrndup(fullpath, strlen(fullpath), GFP_KERNEL);
 	if (!devname)
 		return ERR_PTR(-ENOMEM);
 
-	cifs_dbg(FYI, "%s: devname: %s\n", __func__, devname);
+	convert_delimiter(devname, '/');
 
 	/* strip first '\' from fullpath */
 	mountdata = cifs_compose_mount_options(cifs_sb->mountdata,
