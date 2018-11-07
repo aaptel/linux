@@ -4471,7 +4471,6 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		mount_put_conns(cifs_sb, xid, server, ses, tcon);
 		rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
 	}
-
 	if (rc) {
 		/* Perform DFS failover to any other DFS targets */
 		rc = mount_do_dfs_failover(root_path + 1, cifs_sb, vol, NULL,
@@ -4481,6 +4480,15 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 			goto error;
 		}
 	}
+
+	/* Cache out resolved root server for possible reconnects */
+	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
+			    vol->UNC + 1, NULL, NULL, false);
+	if (rc) {
+		kfree(root_path);
+		return rc;
+	}
+
 	/*
 	 * Save root tcon for additional DFS requests to update or create a new
 	 * DFS cache entry, or even perform DFS failover.
