@@ -2705,8 +2705,7 @@ static int match_session(struct cifs_ses *ses, struct smb_vol *vol)
  * tcon_ipc. The IPC tcon has the same lifetime as the session.
  */
 static int
-cifs_setup_ipc(struct cifs_ses *ses, struct smb_vol *volume_info,
-	       struct cifs_sb_info *cifs_sb)
+cifs_setup_ipc(struct cifs_ses *ses, struct smb_vol *volume_info)
 {
 	int rc = 0, xid;
 	struct cifs_tcon *tcon;
@@ -2984,8 +2983,7 @@ cifs_set_cifscreds(struct smb_vol *vol __attribute__((unused)),
  * cifs_get_tcon() for refcount explanations.
  */
 static struct cifs_ses *
-cifs_get_smb_ses(struct TCP_Server_Info *server, struct smb_vol *volume_info,
-		 struct cifs_sb_info *cifs_sb)
+cifs_get_smb_ses(struct TCP_Server_Info *server, struct smb_vol *volume_info)
 {
 	int rc = -ENOMEM;
 	unsigned int xid;
@@ -3081,7 +3079,7 @@ cifs_get_smb_ses(struct TCP_Server_Info *server, struct smb_vol *volume_info,
 
 	free_xid(xid);
 
-	cifs_setup_ipc(ses, volume_info, cifs_sb);
+	cifs_setup_ipc(ses, volume_info);
 
 	return ses;
 
@@ -3974,7 +3972,7 @@ static int mount_get_conns(struct smb_vol *vol, struct cifs_sb_info *cifs_sb,
 		server->max_credits = vol->max_credits;
 
 	/* get a reference to a SMB session */
-	ses = cifs_get_smb_ses(server, vol, cifs_sb);
+	ses = cifs_get_smb_ses(server, vol);
 	if (IS_ERR(ses)) {
 		rc = PTR_ERR(ses);
 		return rc;
@@ -4446,15 +4444,15 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	int count;
 
 	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
-	if (rc == -EACCES || rc == -EOPNOTSUPP)
+	if (!server || !ses)
 		goto error;
 
 	root_path = build_unc_path_to_root(vol, cifs_sb, false);
 	if (IS_ERR(root_path)) {
 		rc = PTR_ERR(root_path);
+		root_path = NULL;
 		goto error;
 	}
-
 	/*
 	 * Perform an unconditional check for whether there are DFS
 	 * referrals for this path without prefix, to provide support
@@ -4484,12 +4482,9 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		if (rc)
 			goto error;
 	}
-
-	/* Cache out resolved root server for possible reconnects */
-	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
-			    vol->UNC + 1, NULL, NULL, false);
-	if (rc)
-		goto error;
+	/* Unconditionally cache out resolved root server for post reconnects */
+	(void)dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
+			     vol->UNC + 1, NULL, NULL, false);
 
 	/*
 	 * Save root tcon for additional DFS requests to update or create a new
@@ -4504,18 +4499,10 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 
 	root_tcon = tcon;
 
-	full_path = build_unc_path_to_root(vol, cifs_sb, true);
-	if (!full_path) {
-		rc = -ENOMEM;
-		goto error;
-	}
-
 	for (count = 1; ;) {
-		if (!rc && tcon) {
+		if (tcon) {
 			rc = is_path_remote(cifs_sb, vol, xid, server, tcon);
-			if (!rc)
-				break; /* not a DFS link */
-			if (rc != -EREMOTE)
+			if (!rc || rc != -EREMOTE)
 				break;
 		}
 		/*
@@ -4526,6 +4513,14 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		 */
 		if (count++ > MAX_NESTED_LINKS) {
 			rc = -ELOOP;
+			break;
+		}
+
+		kfree(full_path);
+		full_path = build_unc_path_to_root(vol, cifs_sb, true);
+		if (IS_ERR(full_path)) {
+			rc = PTR_ERR(full_path);
+			full_path = NULL;
 			break;
 		}
 
@@ -4542,13 +4537,14 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		}
 		if (rc) {
 			if (rc == -EACCES || rc == -EOPNOTSUPP)
-				goto error;
+				break;
 			/* Perform DFS failover to any other DFS targets */
 			rc = mount_do_dfs_failover(full_path + 1, cifs_sb, vol,
 						   root_tcon->ses, &xid,
 						   &server, &ses, &tcon);
-			if (rc)
-				break;
+			if (rc == -EACCES || rc == -EOPNOTSUPP || !server ||
+			    !ses)
+				goto error;
 		}
 	}
 	if (count == 1) {
@@ -4562,21 +4558,27 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	if (rc)
 		goto error;
 
-	free_xid(xid);
-
 	spin_lock(&cifs_tcp_ses_lock);
-	/* Save full path in new tcon to do failover when reconnecting tcons */
-	tcon->dfs_path = kstrndup(full_path, strlen(full_path), GFP_KERNEL);
-	if (!tcon->dfs_path) {
-		spin_unlock(&cifs_tcp_ses_lock);
-		rc = -ENOMEM;
-		goto error;
+	if (full_path) {
+		cifs_dbg(FYI, "%s: DFS path in tcon\n", __func__);
+		/* Save full path in new tcon to do failover when reconnecting tcons */
+		tcon->dfs_path = full_path;
+		full_path = NULL;
+		tcon->remap = cifs_remap(cifs_sb);
+	} else {
+		cifs_dbg(FYI, "%s: no DFS path in tcon\n", __func__);
 	}
-	tcon->remap = cifs_remap(cifs_sb);
+	/* Save origin full path to be used during reconnect for DFS failover */
+	cifs_sb->origin_fullpath = kstrndup(tcon->dfs_path,
+					    strlen(tcon->dfs_path), GFP_KERNEL);
+	if (!cifs_sb->origin_fullpath)
+		rc = -ENOMEM;
 	spin_unlock(&cifs_tcp_ses_lock);
 
-	cifs_sb->origin_fullpath = full_path;
+	if (rc)
+		goto error;
 
+	free_xid(xid);
 	return mount_setup_tlink(cifs_sb, ses, tcon);
 
 error:
@@ -4923,7 +4925,7 @@ cifs_construct_tcon(struct cifs_sb_info *cifs_sb, kuid_t fsuid)
 	++master_tcon->ses->server->srv_count;
 	spin_unlock(&cifs_tcp_ses_lock);
 
-	ses = cifs_get_smb_ses(master_tcon->ses->server, vol_info, cifs_sb);
+	ses = cifs_get_smb_ses(master_tcon->ses->server, vol_info);
 	if (IS_ERR(ses)) {
 		tcon = (struct cifs_tcon *)ses;
 		cifs_put_tcp_session(master_tcon->ses->server, 0);
