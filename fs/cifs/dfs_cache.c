@@ -536,8 +536,10 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 	int numrefs = 0;
 
 	cifs_dbg(FYI, "%s: update expired cache entry\n", __func__);
-
-	/* Check if caller provided enough parameters to update expired entry */
+	/*
+	 * Check if caller provided enough parameters to update an expired
+	 * entry.
+	 */
 	if (!ses || !ses->server || !ses->server->ops->get_dfs_refer)
 		return ERR_PTR(-ETIME);
 	if (unlikely(!nls_codepage))
@@ -563,6 +565,9 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
  *
  * If the entry wasn't found, it will create a new one. Or if it was found but
  * expired, then it will update the entry accordingly.
+ *
+ * For interlinks, __cifs_dfs_mount() and expand_dfs_referral() are supposed to
+ * handle them properly.
  */
 static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 						 struct cifs_ses *ses,
@@ -572,96 +577,74 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 {
 	int rc;
 	unsigned int h;
-	bool interlink;
 	struct dfs_cache_entry *ce;
 	struct dfs_info3_param *nrefs;
 	int numnrefs;
 
-	for (;;) {
-		cifs_dbg(FYI, "%s: search path: %s\n", __func__, path);
+	cifs_dbg(FYI, "%s: search path: %s\n", __func__, path);
 
-		ce = find_cache_entry(path, &h, check_ppath);
-		if (IS_ERR(ce)) {
-			cifs_dbg(FYI, "%s: cache miss\n", __func__);
-			/*
-			 * If @noreq is set, no requests will be sent to the
-			 * server for either updating or getting a new DFS
-			 * referral.
-			 */
-			if (noreq)
-				break;
-			/*
-			 * No cache entry was found, so check for valid
-			 * parameters that will be neccessary to get a new DFS
-			 * referral and then create new cache entry.
-			 */
-			if (!ses || !ses->server ||
-			    !ses->server->ops->get_dfs_refer) {
-				ce = ERR_PTR(-ENOSYS);
-				break;
-			}
-			if (unlikely(!nls_codepage)) {
-				ce = ERR_PTR(-EINVAL);
-				break;
-			}
-
-			nrefs = NULL;
-			numnrefs = 0;
-
-			cifs_dbg(FYI, "%s: DFS referral request for %s\n",
-				 __func__, path);
-
-			rc = ses->server->ops->get_dfs_refer(xid, ses, path,
-							     &nrefs, &numnrefs,
-							     nls_codepage,
-							     remap);
-			if (rc) {
-				ce = ERR_PTR(rc);
-				break;
-			}
-
-			dump_refs(nrefs, numnrefs);
-
-			cifs_dbg(FYI, "%s: new cache entry\n", __func__);
-
-			ce = add_cache_entry(h, path, nrefs, numnrefs);
-			free_dfs_info_array(nrefs, numnrefs);
-
-			if (IS_ERR(ce))
-				break;
-		}
-
-		dump_ce(ce);
-
-		/* Just return the found cache entry in case @noreq is set */
-		if (noreq)
-			break;
-
-		interlink = IS_INTERLINK_SET(ce->ce_flags);
-
-		if (cache_entry_expired(ce)) {
-			cifs_dbg(FYI, "%s: expired TTL\n", __func__);
-			ce = update_cache_entry(xid, ses, nls_codepage, remap,
-						path, check_ppath, ce);
-			if (IS_ERR(ce)) {
-				cifs_dbg(FYI, "%s: failed to update expired entry\n",
-					 __func__);
-				break;
-			}
-			interlink = IS_INTERLINK_SET(ce->ce_flags);
-		}
-
-		if (ce->ce_srvtype == DFS_TYPE_ROOT ||
-		    is_sysvol_or_netlogon(path) || !interlink)
-			break;
+	ce = find_cache_entry(path, &h, check_ppath);
+	if (IS_ERR(ce)) {
+		cifs_dbg(FYI, "%s: cache miss\n", __func__);
 		/*
-		 * The DFS link (interlink) points to another DFS namespace, so
-		 * just follow it.
+		 * If @noreq is set, no requests will be sent to the server for
+		 * either updating or getting a new DFS referral.
 		 */
-		path = get_tgt_name(ce);
-		if (unlikely(IS_ERR(path))) {
-			ce = ERR_CAST(path);
-			break;
+		if (noreq)
+			return ce;
+		/*
+		 * No cache entry was found, so check for valid parameters that
+		 * will be required to get a new DFS referral and then create a
+		 * new cache entry.
+		 */
+		if (!ses || !ses->server || !ses->server->ops->get_dfs_refer) {
+			ce = ERR_PTR(-ENOSYS);
+			return ce;
+		}
+		if (unlikely(!nls_codepage)) {
+			ce = ERR_PTR(-EINVAL);
+			return ce;
+		}
+
+		nrefs = NULL;
+		numnrefs = 0;
+
+		cifs_dbg(FYI, "%s: DFS referral request for %s\n", __func__,
+			 path);
+
+		rc = ses->server->ops->get_dfs_refer(xid, ses, path, &nrefs,
+						     &numnrefs, nls_codepage,
+						     remap);
+		if (rc) {
+			ce = ERR_PTR(rc);
+			return ce;
+		}
+
+		dump_refs(nrefs, numnrefs);
+
+		cifs_dbg(FYI, "%s: new cache entry\n", __func__);
+
+		ce = add_cache_entry(h, path, nrefs, numnrefs);
+		free_dfs_info_array(nrefs, numnrefs);
+
+		if (IS_ERR(ce))
+			return ce;
+	}
+
+	dump_ce(ce);
+
+	/* Just return the found cache entry in case @noreq is set */
+	if (noreq)
+		return ce;
+
+	if (cache_entry_expired(ce)) {
+		cifs_dbg(FYI, "%s: expired cache entry\n", __func__);
+		ce = update_cache_entry(xid, ses, nls_codepage, remap,
+					path, check_ppath, ce);
+		if (IS_ERR(ce)) {
+			cifs_dbg(FYI, "%s: failed to update expired entry\n",
+				 __func__);
+			return ce;
 		}
 	}
 	return ce;
@@ -992,7 +975,7 @@ int dfs_cache_get_tgt_referral(const char *path,
 		goto out;
 	}
 
-	cifs_dbg(FYI, "%s: node name: %s\n", __func__, it->it_name);
+	cifs_dbg(FYI, "%s: target name: %s\n", __func__, it->it_name);
 
 	rc = setup_ref(path, ce, ref, it->it_name);
 
