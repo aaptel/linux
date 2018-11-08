@@ -4008,10 +4008,8 @@ static int mount_get_conns(struct smb_vol *vol, struct cifs_sb_info *cifs_sb,
 		reset_cifs_unix_caps(*xid, tcon, cifs_sb, vol);
 		if ((tcon->ses->server->tcpStatus == CifsNeedReconnect) &&
 		    (le64_to_cpu(tcon->fsUnixInfo.Capability) &
-		     CIFS_UNIX_TRANSPORT_ENCRYPTION_MANDATORY_CAP)) {
-			rc = -EACCES;
-			return rc;
-		}
+		     CIFS_UNIX_TRANSPORT_ENCRYPTION_MANDATORY_CAP))
+			return -EACCES;
 	} else
 		tcon->unix_ext = 0; /* server does not support them */
 
@@ -4448,7 +4446,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	int count;
 
 	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
-	if (rc == -EACCES)
+	if (rc == -EACCES || rc == -EOPNOTSUPP)
 		goto error;
 
 	root_path = build_unc_path_to_root(vol, cifs_sb, false);
@@ -4468,7 +4466,6 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	(void)expand_dfs_referral(xid, ses, vol, cifs_sb, false);
 
 	if (cifs_sb->mountdata == NULL) {
-		kfree(root_path);
 		rc = -ENOENT;
 		goto error;
 	}
@@ -4479,22 +4476,20 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
 	}
 	if (rc) {
+		if (rc == -EACCES || rc == -EOPNOTSUPP)
+			goto error;
 		/* Perform DFS failover to any other DFS targets */
 		rc = mount_do_dfs_failover(root_path + 1, cifs_sb, vol, NULL,
 					   &xid, &server, &ses, &tcon);
-		if (rc) {
-			kfree(root_path);
+		if (rc)
 			goto error;
-		}
 	}
 
 	/* Cache out resolved root server for possible reconnects */
 	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
 			    vol->UNC + 1, NULL, NULL, false);
-	if (rc) {
-		kfree(root_path);
-		return rc;
-	}
+	if (rc)
+		goto error;
 
 	/*
 	 * Save root tcon for additional DFS requests to update or create a new
@@ -4503,6 +4498,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	spin_lock(&cifs_tcp_ses_lock);
 	tcon->tc_count++;
 	tcon->dfs_path = root_path;
+	root_path = NULL;
 	tcon->remap = cifs_remap(cifs_sb);
 	spin_unlock(&cifs_tcp_ses_lock);
 
@@ -4568,8 +4564,6 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 
 	free_xid(xid);
 
-	cifs_sb->origin_fullpath = full_path;
-
 	spin_lock(&cifs_tcp_ses_lock);
 	/* Save full path in new tcon to do failover when reconnecting tcons */
 	tcon->dfs_path = kstrndup(full_path, strlen(full_path), GFP_KERNEL);
@@ -4581,11 +4575,14 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	tcon->remap = cifs_remap(cifs_sb);
 	spin_unlock(&cifs_tcp_ses_lock);
 
+	cifs_sb->origin_fullpath = full_path;
+
 	return mount_setup_tlink(cifs_sb, ses, tcon);
 
 error:
-	mount_put_conns(cifs_sb, xid, server, ses, tcon);
 	kfree(full_path);
+	kfree(root_path);
+	mount_put_conns(cifs_sb, xid, server, ses, tcon);
 	return rc;
 }
 #endif
