@@ -171,8 +171,8 @@ static int smb2_dfs_update_target(struct cifs_tcon *tcon)
 
 	xid = get_xid();
 
-	rc = dfs_cache_find(xid, tcon->ses, nlsc, tcon->remap, tcon->dfs_path + 1,
-			    NULL, NULL, true);
+	rc = dfs_cache_find(xid, tcon->ses, nlsc, tcon->remap,
+			    tcon->dfs_path + 1, NULL, NULL, true);
 	if (!rc)
 		tcon->need_refresh_dfscache = false;
 
@@ -196,10 +196,8 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 		return SMB2_tcon(0, tcon->ses, tree, tcon, nlsc);
 	}
 
-	if (unlikely(!tcon->dfs_path)) {
-		WARN_ON_ONCE(!tcon->dfs_path);
-		return -EINVAL;
-	}
+	if (!tcon->dfs_path)
+		return SMB2_tcon(0, tcon->ses, tcon->treeName, tcon, nlsc);
 
 	rc = dfs_cache_noreq_find(tcon->dfs_path + 1, NULL, &list);
 	if (rc)
