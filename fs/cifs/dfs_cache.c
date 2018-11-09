@@ -34,9 +34,8 @@
 
 #include "dfs_cache.h"
 
-/* TODO: add code to limit the number of stored DFS cache entries */
-
 #define DFS_CACHE_HTABLE_SIZE 32
+#define DFS_CACHE_MAX_ENTRIES 64
 
 #define IS_INTERLINK_SET(v) ((v) & (DFSREF_REFERRAL_SERVER | \
 				    DFSREF_STORAGE_SERVER))
@@ -61,6 +60,11 @@ struct dfs_cache_entry {
 };
 
 static struct kmem_cache *dfs_cache_slab __read_mostly;
+
+/*
+ * Number of entries in the cache
+ */
+static size_t dfs_cache_count = 0;
 
 static DEFINE_MUTEX(dfs_cache_lock);
 static struct hlist_head dfs_cache_htable[DFS_CACHE_HTABLE_SIZE];
@@ -382,6 +386,28 @@ static struct dfs_cache_entry *alloc_cache_entry(const char *path,
 	return ce;
 }
 
+static void remove_oldest_entry(void)
+{
+	int bucket;
+	struct dfs_cache_entry *ce;
+	struct dfs_cache_entry *to_del = NULL;
+
+	rcu_read_lock();
+	hash_for_each_rcu(dfs_cache_htable, bucket, ce, ce_hlist) {
+		if (!to_del || timespec64_compare(&ce->ce_etime,
+						  &to_del->ce_etime) < 0)
+			to_del = ce;
+	}
+	if (!to_del) {
+		cifs_dbg(FYI, "%s: no entry to remove", __func__);
+		return;
+	}
+	cifs_dbg(FYI, "%s: removing entry", __func__);
+	dump_ce(to_del);
+	flush_cache_ent(ce);
+	rcu_read_unlock();
+}
+
 /* Add a new DFS cache entry */
 static inline struct dfs_cache_entry *add_cache_entry(unsigned int hash,
 						      const char *path,
@@ -624,11 +650,18 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 
 		cifs_dbg(FYI, "%s: new cache entry\n", __func__);
 
+		if (dfs_cache_count >= DFS_CACHE_MAX_ENTRIES) {
+			cifs_dbg(FYI, "%s: reached max cache size (%d)",
+				 __func__, DFS_CACHE_MAX_ENTRIES);
+			remove_oldest_entry();
+		}
 		ce = add_cache_entry(h, path, nrefs, numnrefs);
 		free_dfs_info_array(nrefs, numnrefs);
 
 		if (IS_ERR(ce))
 			return ce;
+
+		dfs_cache_count++;
 	}
 
 	dump_ce(ce);
