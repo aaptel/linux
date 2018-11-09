@@ -372,20 +372,15 @@ static void reconn_inval_dfs_target(struct TCP_Server_Info *server,
 	char *unc;
 	int len;
 
-	if (!cifs_sb->origin_fullpath || !tgt_list || list_empty(tgt_list) ||
-	    !*tgt_it)
+	if (!cifs_sb->origin_fullpath || !tgt_list || list_empty(tgt_list))
 		return;
 
-	*tgt_it = dfs_cache_get_next_tgt(tgt_list, *tgt_it);
 	if (!*tgt_it) {
-		rc = dfs_cache_noreq_find(cifs_sb->origin_fullpath + 1, NULL,
-					  NULL);
-		if (rc) {
-			cifs_dbg(VFS, "%s: failed to get target server from DFS cache\n",
-				 __func__);
-			return;
-		}
 		*tgt_it = dfs_cache_get_tgt_iterator(tgt_list);
+	} else {
+		*tgt_it = dfs_cache_get_next_tgt(tgt_list, *tgt_it);
+		if (!*tgt_it)
+			*tgt_it = dfs_cache_get_tgt_iterator(tgt_list);
 	}
 
 	cifs_dbg(FYI, "%s: UNC: %s\n", __func__, cifs_sb->origin_fullpath);
@@ -434,15 +429,9 @@ static inline int reconn_setup_dfs_targets(struct cifs_sb_info *cifs_sb,
 					   struct list_head *list,
 					   struct dfs_cache_tgt_iterator **it)
 {
-	int rc;
-
 	if (!cifs_sb->origin_fullpath)
 		return -EOPNOTSUPP;
-
-	rc = dfs_cache_noreq_find(cifs_sb->origin_fullpath + 1, NULL, list);
-	if (!rc)
-		*it = dfs_cache_get_tgt_iterator(list);
-	return rc;
+	return dfs_cache_noreq_find(cifs_sb->origin_fullpath + 1, NULL, list);
 }
 #endif
 
@@ -4134,7 +4123,8 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-static inline int get_next_dfs_tgt_iterator(const char *path,
+static inline int get_next_dfs_tgt_iterator(struct smb_vol *vol,
+					    const char *path,
 					    struct list_head *tgt_list,
 					    struct dfs_cache_tgt_iterator **it)
 {
@@ -4142,45 +4132,41 @@ static inline int get_next_dfs_tgt_iterator(const char *path,
 
 	if (list_empty(tgt_list)) {
 		rc = dfs_cache_noreq_find(path, NULL, tgt_list);
-		if (!rc)
-			*it = dfs_cache_get_tgt_iterator(tgt_list);
+		if (rc)
+			return rc;
+		*it = dfs_cache_get_tgt_iterator(tgt_list);
 	} else {
 		*it = dfs_cache_get_next_tgt(tgt_list, *it);
 	}
-	return rc;
+	return !*it ? -EHOSTDOWN : 0;
 }
 
-static int mount_get_next_dfs_tgt(struct cifs_sb_info *cifs_sb,
-				  const char *path,
-				  struct list_head *tgt_list,
-				  struct dfs_cache_tgt_iterator **tgt_it)
+static int inline get_next_dfs_tgt(struct cifs_sb_info *cifs_sb,
+				   struct smb_vol *vol,
+				   const char *path,
+				   struct list_head *tgt_list,
+				   struct dfs_cache_tgt_iterator **tgt_it)
 {
 	int rc;
 
-	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
-		return -EOPNOTSUPP;
-
 	/* Get next DFS target available for client failover */
-	rc = get_next_dfs_tgt_iterator(path, tgt_list, tgt_it);
+	rc = get_next_dfs_tgt_iterator(vol, path, tgt_list, tgt_it);
 	if (rc)
 		return rc;
-
-	if (!*tgt_it)
-		return -EHOSTDOWN; /* no DFS targets left for client failover */
 
 	cifs_dbg(FYI, "%s: next target: %s\n", __func__,
 		 dfs_cache_get_tgt_name(*tgt_it));
 	return 0;
 }
 
-static int mount_setup_dfs_tgt_conn(const char *path,
-				    const struct dfs_cache_tgt_iterator *tgt_it,
-				    struct cifs_sb_info *cifs_sb,
-				    struct smb_vol *vol,
-				    unsigned int *xid,
-				    struct TCP_Server_Info **server,
-				    struct cifs_ses **ses,
-				    struct cifs_tcon **tcon)
+static int setup_dfs_tgt_conn(const char *path,
+			      const struct dfs_cache_tgt_iterator *tgt_it,
+			      struct cifs_sb_info *cifs_sb,
+			      struct smb_vol *vol,
+			      unsigned int *xid,
+			      struct TCP_Server_Info **server,
+			      struct cifs_ses **ses,
+			      struct cifs_tcon **tcon)
 {
 	int rc;
 	struct dfs_info3_param ref = {0};
@@ -4188,9 +4174,6 @@ static int mount_setup_dfs_tgt_conn(const char *path,
 	struct smb_vol fake_vol = {0};
 
 	cifs_dbg(FYI, "%s: dfs path: %s\n", __func__, path);
-
-	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
-		return -EOPNOTSUPP;
 
 	rc = dfs_cache_get_tgt_referral(path, tgt_it, &ref);
 	if (rc)
@@ -4257,19 +4240,22 @@ static int mount_do_dfs_failover(const char *path,
 	LIST_HEAD(tgt_list);
 	struct dfs_cache_tgt_iterator *tgt_it = NULL;
 
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
+		return -EOPNOTSUPP;
+
 	for (;;) {
 		/* Get next DFS target server - if any */
-		rc = mount_get_next_dfs_tgt(cifs_sb, path, &tgt_list,
-					    &tgt_it);
+		rc = get_next_dfs_tgt(cifs_sb, vol, path, &tgt_list, &tgt_it);
+		cifs_dbg(FYI, "%s: get_next_dfs_tgt: rc = %d\n", __func__, rc);
 		if (rc)
 			break;
 		/* Connect to next DFS target */
-		rc = mount_setup_dfs_tgt_conn(path, tgt_it, cifs_sb, vol, xid,
-					      server, ses, tcon);
-		if (!rc || rc == -EACCES || rc == -EOPNOTSUPP)
+		rc = setup_dfs_tgt_conn(path, tgt_it, cifs_sb, vol, xid, server,
+					ses, tcon);
+		if (rc == -EACCES || rc == -EOPNOTSUPP || !server ||
+		    !ses)
 			break;
 	}
-
 	if (!rc) {
 		/*
 		 * Update DFS target hint in DFS referral cache with the target
