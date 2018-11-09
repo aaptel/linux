@@ -372,20 +372,16 @@ static void reconn_inval_dfs_target(struct TCP_Server_Info *server,
 	char *unc;
 	int len;
 
-	if (!*tgt_it)
+	if (!cifs_sb->origin_fullpath || !tgt_list || list_empty(tgt_list) ||
+	    !*tgt_it)
 		return;
 
 	*tgt_it = dfs_cache_get_next_tgt(tgt_list, *tgt_it);
 	if (!*tgt_it) {
-		/*
-		 * No DFS targets left for reconnect. However, if the cached
-		 * entry is still unexpired, then get target iterator again and
-		 * keep trying to reconnect to every target in its list.
-		 */
 		rc = dfs_cache_noreq_find(cifs_sb->origin_fullpath + 1, NULL,
 					  NULL);
 		if (rc) {
-			cifs_dbg(FYI, "%s: no DFS targets left for reconnect\n",
+			cifs_dbg(VFS, "%s: failed to get target server from DFS cache\n",
 				 __func__);
 			return;
 		}
@@ -439,6 +435,9 @@ static inline int reconn_setup_dfs_targets(struct cifs_sb_info *cifs_sb,
 					   struct dfs_cache_tgt_iterator **it)
 {
 	int rc;
+
+	if (!cifs_sb->origin_fullpath)
+		return -EOPNOTSUPP;
 
 	rc = dfs_cache_noreq_find(cifs_sb->origin_fullpath + 1, NULL, list);
 	if (!rc)
@@ -535,12 +534,11 @@ cifs_reconnect(struct TCP_Server_Info *server)
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	cifs_sb = find_super_by_tcp(server);
 	if (IS_ERR(cifs_sb)) {
-		cifs_dbg(VFS, "%s: failed to get cifs sb for DFS failover\n",
-			 __func__);
+		cifs_dbg(VFS, "%s: will not do DFS failover\n", __func__);
 	} else {
 		rc = reconn_setup_dfs_targets(cifs_sb, &tgt_list, &tgt_it);
 		if (rc) {
-			cifs_dbg(VFS, "%s: failed to get target servers for DFS failover\n",
+			cifs_dbg(VFS, "%s: no target servers for DFS failover\n",
 				 __func__);
 		}
 	}
