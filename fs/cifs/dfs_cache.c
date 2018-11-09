@@ -400,11 +400,13 @@ static void remove_oldest_entry(void)
 	}
 	if (!to_del) {
 		cifs_dbg(FYI, "%s: no entry to remove", __func__);
-		return;
+		goto out;
 	}
 	cifs_dbg(FYI, "%s: removing entry", __func__);
 	dump_ce(to_del);
 	flush_cache_ent(ce);
+	dfs_cache_count--;
+out:
 	rcu_read_unlock();
 }
 
