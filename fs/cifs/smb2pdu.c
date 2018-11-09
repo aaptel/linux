@@ -189,6 +189,10 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 	LIST_HEAD(list);
 	struct dfs_cache_tgt_iterator *it = NULL;
 	char tree[MAX_TREE_SIZE + 1];
+	const char *tcp_host;
+	size_t tcp_host_len;
+	const char *dfs_host;
+	size_t dfs_host_len;
 
 	if (tcon->ipc) {
 		snprintf(tree, sizeof(tree), "\\\\%s\\IPC$",
@@ -203,10 +207,19 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 	if (rc)
 		return rc;
 
+	extract_unc_hostname(tcon->ses->server->hostname, &tcp_host,
+			     &tcp_host_len);
+
 	for (it = dfs_cache_get_tgt_iterator(&list); it;
 	     it = dfs_cache_get_next_tgt(&list, it)) {
-		snprintf(tree, sizeof(tree), "\\%s",
-			 dfs_cache_get_tgt_name(it));
+		const char *tgt = dfs_cache_get_tgt_name(it);
+		extract_unc_hostname(tgt, &dfs_host, &dfs_host_len);
+
+		if (dfs_host_len != tcp_host_len
+		    || strncmp(dfs_host, tcp_host, dfs_host_len) != 0)
+			continue;
+
+		snprintf(tree, sizeof(tree), "\\%s", tgt);
 
 		rc = SMB2_tcon(0, tcon->ses, tree, tcon, nlsc);
 		if (!rc)

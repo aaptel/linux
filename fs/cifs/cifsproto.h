@@ -563,6 +563,7 @@ void cifs_free_hash(struct crypto_shash **shash, struct sdesc **sdesc);
 
 extern void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
 				unsigned int *len, unsigned int *offset);
+void extract_unc_hostname(const char *unc, const char **h, size_t *len);
 
 static inline int cifs_mount(struct cifs_sb_info *cifs_sb,
 			     struct smb_vol *volume_info)
