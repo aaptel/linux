@@ -51,6 +51,8 @@ extern int dfs_cache_noreq_update_tgthint(const char *path,
 extern int dfs_cache_get_tgt_referral(const char *path,
 				      const struct dfs_cache_tgt_iterator *it,
 				      struct dfs_info3_param *ref);
+extern int dfs_cache_add_vol(struct smb_vol *vol);
+extern void dfs_cache_del_vol(const char *fullpath);
 
 static inline struct dfs_cache_tgt_iterator *
 dfs_cache_get_next_tgt(struct list_head *head,

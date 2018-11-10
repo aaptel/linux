@@ -2511,7 +2511,7 @@ cifs_put_tcp_session(struct TCP_Server_Info *server, int from_reconnect)
 		force_sig(SIGKILL, task);
 }
 
-static struct TCP_Server_Info *
+struct TCP_Server_Info *
 cifs_get_tcp_session(struct smb_vol *volume_info)
 {
 	struct TCP_Server_Info *tcp_ses = NULL;
@@ -4123,40 +4123,21 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-static inline int get_next_dfs_tgt_iterator(struct smb_vol *vol,
-					    const char *path,
-					    struct list_head *tgt_list,
-					    struct dfs_cache_tgt_iterator **it)
-{
-	int rc = 0;
-
-	if (list_empty(tgt_list)) {
-		rc = dfs_cache_noreq_find(path, NULL, tgt_list);
-		if (rc)
-			return rc;
-		*it = dfs_cache_get_tgt_iterator(tgt_list);
-	} else {
-		*it = dfs_cache_get_next_tgt(tgt_list, *it);
-	}
-	return !*it ? -EHOSTDOWN : 0;
-}
-
-static int inline get_next_dfs_tgt(struct cifs_sb_info *cifs_sb,
-				   struct smb_vol *vol,
-				   const char *path,
+static int inline get_next_dfs_tgt(const char *path,
 				   struct list_head *tgt_list,
 				   struct dfs_cache_tgt_iterator **tgt_it)
 {
 	int rc;
 
-	/* Get next DFS target available for client failover */
-	rc = get_next_dfs_tgt_iterator(vol, path, tgt_list, tgt_it);
-	if (rc)
-		return rc;
-
-	cifs_dbg(FYI, "%s: next target: %s\n", __func__,
-		 dfs_cache_get_tgt_name(*tgt_it));
-	return 0;
+	if (list_empty(tgt_list)) {
+		rc = dfs_cache_noreq_find(path, NULL, tgt_list);
+		if (rc)
+			return rc;
+		*tgt_it = dfs_cache_get_tgt_iterator(tgt_list);
+	} else {
+		*tgt_it = dfs_cache_get_next_tgt(tgt_list, *tgt_it);
+	}
+	return !*tgt_it ? -EHOSTDOWN : 0;
 }
 
 static int setup_dfs_tgt_conn(const char *path,
@@ -4245,8 +4226,7 @@ static int mount_do_dfs_failover(const char *path,
 
 	for (;;) {
 		/* Get next DFS target server - if any */
-		rc = get_next_dfs_tgt(cifs_sb, vol, path, &tgt_list, &tgt_it);
-		cifs_dbg(FYI, "%s: get_next_dfs_tgt: rc = %d\n", __func__, rc);
+		rc = get_next_dfs_tgt(path, &tgt_list, &tgt_it);
 		if (rc)
 			break;
 		/* Connect to next DFS target */
@@ -4259,7 +4239,7 @@ static int mount_do_dfs_failover(const char *path,
 	if (!rc) {
 		/*
 		 * Update DFS target hint in DFS referral cache with the target
-		 * server we successfully connected to.
+		 * server we successfully reconnected to.
 		 */
 		rc = dfs_cache_update_tgthint(*xid, root_ses ? root_ses : *ses,
 					      cifs_sb->local_nls,
@@ -4466,10 +4446,6 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		if (rc)
 			goto error;
 	}
-	/* Unconditionally cache out resolved root server for post reconnects */
-	(void)dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
-			     vol->UNC + 1, NULL, NULL, false);
-
 	/*
 	 * Save root tcon for additional DFS requests to update or create a new
 	 * DFS cache entry, or even perform DFS failover.
@@ -4531,32 +4507,27 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 				goto error;
 		}
 	}
-	if (count == 1) {
-		spin_lock(&cifs_tcp_ses_lock);
-		root_tcon->tc_count--;
-		spin_unlock(&cifs_tcp_ses_lock);
-	} else {
-		cifs_put_tcon(root_tcon);
-	}
+	cifs_put_tcon(root_tcon);
 
 	if (rc)
 		goto error;
 
 	spin_lock(&cifs_tcp_ses_lock);
 	if (full_path) {
-		cifs_dbg(FYI, "%s: DFS path in tcon\n", __func__);
 		/* Save full path in new tcon to do failover when reconnecting tcons */
 		tcon->dfs_path = full_path;
 		full_path = NULL;
 		tcon->remap = cifs_remap(cifs_sb);
-	} else {
-		cifs_dbg(FYI, "%s: no DFS path in tcon\n", __func__);
 	}
-	/* Save origin full path to be used during reconnect for DFS failover */
-	cifs_sb->origin_fullpath = kstrndup(tcon->dfs_path,
-					    strlen(tcon->dfs_path), GFP_KERNEL);
-	if (!cifs_sb->origin_fullpath)
-		rc = -ENOMEM;
+	if (tcon->dfs_path) {
+		/* Save origin full path to be used during reconnect for DFS failover */
+		cifs_sb->origin_fullpath = kstrndup(tcon->dfs_path,
+						    strlen(tcon->dfs_path), GFP_KERNEL);
+		if (!cifs_sb->origin_fullpath)
+			rc = -ENOMEM;
+		else
+			rc = dfs_cache_add_vol(vol);
+	}
 	spin_unlock(&cifs_tcp_ses_lock);
 
 	if (rc)
@@ -4798,6 +4769,7 @@ cifs_umount(struct cifs_sb_info *cifs_sb)
 	kfree(cifs_sb->prepath);
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	kfree(cifs_sb->origin_fullpath);
+	dfs_cache_del_vol(cifs_sb->origin_fullpath);
 #endif
 	call_rcu(&cifs_sb->rcu, delayed_free);
 }
