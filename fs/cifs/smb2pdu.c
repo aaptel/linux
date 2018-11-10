@@ -156,32 +156,6 @@ out:
 }
 
 #ifdef CONFIG_CIFS_DFS_UPCALL
-static int smb2_dfs_update_target(struct cifs_tcon *tcon)
-{
-	int rc = 0;
-	unsigned int xid;
-	struct nls_table *nlsc;
-
-	if (unlikely(!tcon->dfs_path)) {
-		WARN_ON_ONCE(!tcon->dfs_path);
-		return -EINVAL;
-	}
-
-	nlsc = load_nls_default();
-
-	xid = get_xid();
-
-	rc = dfs_cache_find(xid, tcon->ses, nlsc, tcon->remap,
-			    tcon->dfs_path + 1, NULL, NULL, true);
-	if (!rc)
-		tcon->need_refresh_dfscache = false;
-
-	unload_nls(nlsc);
-
-	free_xid(xid);
-	return rc;
-}
-
 static int __smb2_reconnect(const struct nls_table *nlsc,
 			    struct cifs_tcon *tcon)
 {
@@ -2920,67 +2894,6 @@ smb2_echo_callback(struct mid_q_entry *mid)
 	add_credits(server, credits_received, CIFS_ECHO_OP);
 }
 
-#ifdef CONFIG_CIFS_DFS_UPCALL
-void smb2_dfs_update_targets(struct work_struct *work)
-{
-	struct TCP_Server_Info *server = container_of(work,
-						      struct TCP_Server_Info,
-						      dfscache.work);
-	struct cifs_ses *ses;
-	struct cifs_tcon *tcon, *tcon2;
-	struct list_head tmp_list;
-	bool tcon_exist = false;
-	int rc;
-	bool resched = false;
-
-	mutex_lock(&server->dfscache_mutex);
-
-	INIT_LIST_HEAD(&tmp_list);
-	cifs_dbg(FYI, "%s: refreshing DFS referral cache\n", __func__);
-
-	spin_lock(&cifs_tcp_ses_lock);
-	list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
-		list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
-			if (tcon->need_refresh_dfscache) {
-				tcon->tc_count++;
-				list_add_tail(&tcon->ulist, &tmp_list);
-				tcon_exist = true;
-			}
-		}
-		if (ses->tcon_ipc && ses->tcon_ipc->need_refresh_dfscache) {
-			list_add_tail(&ses->tcon_ipc->ulist, &tmp_list);
-			tcon_exist = true;
-		}
-	}
-	/*
-	 * Get the reference to server struct to be sure that the last call of
-	 * cifs_put_tcon() in the loop below won't release the server pointer.
-	 */
-	if (tcon_exist)
-		server->srv_count++;
-
-	spin_unlock(&cifs_tcp_ses_lock);
-
-	list_for_each_entry_safe(tcon, tcon2, &tmp_list, ulist) {
-		rc = smb2_dfs_update_target(tcon);
-		if (rc)
-			resched = true;
-		list_del_init(&tcon->ulist);
-		cifs_put_tcon(tcon);
-	}
-
-	cifs_dbg(FYI, "%s: finished refreshing DFS referral cache\n", __func__);
-	if (resched)
-		queue_delayed_work(cifsiod_wq, &server->dfscache, 2 * HZ);
-
-	mutex_unlock(&server->dfscache_mutex);
-
-	/* now we can safely release srv struct */
-	if (tcon_exist)
-		cifs_put_tcp_session(server, 1);
-}
-#endif
-
 void smb2_reconnect_server(struct work_struct *work)
 {
 	struct TCP_Server_Info *server = container_of(work,
@@ -3041,10 +2954,6 @@ void smb2_reconnect_server(struct work_struct *work)
 	/* now we can safely release srv struct */
 	if (tcon_exist)
 		cifs_put_tcp_session(server, 1);
-#ifdef CONFIG_CIFS_DFS_UPCALL
-	if (!resched)
-		queue_delayed_work(cifsiod_wq, &server->dfscache, 2 * HZ);
-#endif
 }
 
 int

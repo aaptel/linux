@@ -1089,6 +1089,7 @@ static int dup_vol(struct smb_vol *vol, struct smb_vol *new)
 			goto err_free_username;
 	}
 	if (vol->UNC) {
+		cifs_dbg(FYI, "%s: vol->UNC: %s\n", __func__, vol->UNC);
 		new->UNC = kstrndup(vol->UNC, strlen(vol->UNC), GFP_KERNEL);
 		if (!new->UNC)
 			goto err_free_password;
@@ -1106,6 +1107,7 @@ static int dup_vol(struct smb_vol *vol, struct smb_vol *new)
 			goto err_free_domainname;
 	}
 	if (vol->prepath) {
+		cifs_dbg(FYI, "%s: vol->prepath: %s\n", __func__, vol->prepath);
 		new->prepath = kstrndup(vol->prepath, strlen(vol->prepath),
 					GFP_KERNEL);
 		if (!new->prepath)
