@@ -3888,8 +3888,8 @@ int cifs_setup_cifs_sb(struct smb_vol *pvolume_info,
 	return 0;
 }
 
-static void
-cleanup_volume_info_contents(struct smb_vol *volume_info)
+void
+cifs_cleanup_volume_info_contents(struct smb_vol *volume_info)
 {
 	kfree(volume_info->username);
 	kzfree(volume_info->password);
@@ -3904,7 +3904,7 @@ cifs_cleanup_volume_info(struct smb_vol *volume_info)
 {
 	if (!volume_info)
 		return;
-	cleanup_volume_info_contents(volume_info);
+	cifs_cleanup_volume_info_contents(volume_info);
 	kfree(volume_info);
 }
 
@@ -4110,7 +4110,7 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 			rc = PTR_ERR(mdata);
 			mdata = NULL;
 		} else {
-			cleanup_volume_info_contents(volume_info);
+			cifs_cleanup_volume_info_contents(volume_info);
 			rc = cifs_setup_volume_info(volume_info, mdata,
 						    fake_devname, false);
 		}
@@ -4203,7 +4203,7 @@ static int setup_dfs_tgt_conn(const char *path,
 			}
 		}
 	}
-	cleanup_volume_info_contents(&fake_vol);
+	cifs_cleanup_volume_info_contents(&fake_vol);
 	return rc;
 }
 
@@ -4410,8 +4410,10 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		rc = is_path_remote(cifs_sb, vol, xid, server, tcon);
 		if (!rc)
 			goto out;
+		if (rc != -EREMOTE)
+			goto error;
 	}
-	if (rc == -EACCES || rc == -EOPNOTSUPP || rc == -ENOENT)
+	if (rc == -EACCES || rc == -EOPNOTSUPP)
 		goto error;
 
 	root_path = build_unc_path_to_root(vol, cifs_sb, false);
@@ -4421,17 +4423,12 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		goto error;
 	}
 
-	rc = dfs_cache_add_vol(vol);
-	if (rc)
-		goto error;
-
-	cifs_sb->origin_fullpath = build_unc_path_to_root(vol, cifs_sb, true);
-	if (IS_ERR(cifs_sb->origin_fullpath)) {
-		rc = PTR_ERR(cifs_sb->origin_fullpath);
+	full_path = build_unc_path_to_root(vol, cifs_sb, true);
+	if (IS_ERR(full_path)) {
+		rc = PTR_ERR(full_path);
+		full_path = NULL;
 		goto error;
 	}
-	cifs_dbg(FYI, "%s: cifs_sb->origin_fullpath: %s\n", __func__,
-		 cifs_sb->origin_fullpath);
 
 	/*
 	 * Perform an unconditional check for whether there are DFS
@@ -4535,13 +4532,29 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		goto error;
 
 	spin_lock(&cifs_tcp_ses_lock);
-	if (full_path) {
-		/* Save full path in new tcon to do failover when reconnecting tcons */
-		tcon->dfs_path = full_path;
-		full_path = NULL;
-		tcon->remap = cifs_remap(cifs_sb);
+	/* Save full path in new tcon to do failover when reconnecting tcons */
+	kfree(tcon->dfs_path);
+	tcon->dfs_path = full_path;
+	full_path = NULL;
+	tcon->remap = cifs_remap(cifs_sb);
+
+	cifs_sb->origin_fullpath = kstrndup(tcon->dfs_path,
+					    strlen(tcon->dfs_path), GFP_KERNEL);
+	if (!cifs_sb->origin_fullpath) {
+		spin_unlock(&cifs_tcp_ses_lock);
+		rc = -ENOMEM;
+		goto error;
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
+
+	cifs_dbg(FYI, "%s: cifs_sb->origin_fullpath: %s\n", __func__,
+		 cifs_sb->origin_fullpath);
+
+	rc = dfs_cache_add_vol(vol, cifs_sb->origin_fullpath);
+	if (rc) {
+		kfree(cifs_sb->origin_fullpath);
+		goto error;
+	}
 
 out:
 	free_xid(xid);

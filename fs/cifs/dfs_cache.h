@@ -51,7 +51,7 @@ extern int dfs_cache_noreq_update_tgthint(const char *path,
 extern int dfs_cache_get_tgt_referral(const char *path,
 				      const struct dfs_cache_tgt_iterator *it,
 				      struct dfs_info3_param *ref);
-extern int dfs_cache_add_vol(struct smb_vol *vol);
+extern int dfs_cache_add_vol(struct smb_vol *vol, const char *fullpath);
 extern int dfs_cache_update_vol(const char *fullpath,
 				struct TCP_Server_Info *server);
 extern void dfs_cache_del_vol(const char *fullpath);

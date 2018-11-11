@@ -63,6 +63,7 @@ struct dfs_cache_entry {
 static struct kmem_cache *dfs_cache_slab __read_mostly;
 
 struct dfs_cache_vol_info {
+	char *vi_fullpath;
 	struct smb_vol vi_vol;
 	struct list_head vi_list;
 };
@@ -545,7 +546,8 @@ static inline void destroy_slab_cache(void)
 static void inline free_vol(struct dfs_cache_vol_info *vi)
 {
 	list_del(&vi->vi_list);
-	cifs_cleanup_volume_info(&vi->vi_vol);
+	kfree(vi->vi_fullpath);
+	cifs_cleanup_volume_info_contents(&vi->vi_vol);
 	kfree(vi);
 }
 
@@ -1138,58 +1140,55 @@ err_free_username:
  * DFS cache refresh worker.
  *
  * @vol: cifs volume.
+ * @fullpath: origin full path.
  *
  * Return zero if volume was set up correctly, otherwise non-zero.
  */
-int dfs_cache_add_vol(struct smb_vol *vol)
+int dfs_cache_add_vol(struct smb_vol *vol, const char *fullpath)
 {
 	int rc;
 	struct dfs_cache_vol_info *vi;
 
-	if (!vol)
+	if (!vol || !fullpath)
 		return -EINVAL;
+
+	cifs_dbg(FYI, "%s: fullpath: %s\n", __func__, fullpath);
 
 	vi = kzalloc(sizeof(*vi), GFP_KERNEL);
 	if (!vi)
 		return -ENOMEM;
+
+	vi->vi_fullpath = kstrndup(fullpath, strlen(fullpath), GFP_KERNEL);
+	if (!vi->vi_fullpath) {
+		rc = -ENOMEM;
+		goto err_free_vi;
+	}
+
 	rc = dup_vol(vol, &vi->vi_vol);
 	if (rc)
-		return rc;
+		goto err_free_fullpath;
+
 	mutex_lock(&dfs_cache.dc_lock);
 	list_add_tail(&vi->vi_list, &dfs_cache.dc_vol_list);
 	mutex_unlock(&dfs_cache.dc_lock);
 	return 0;
-}
 
-static inline char *get_vol_path(struct smb_vol *vol)
-{
-	char *s;
-	int len;
-
-	len = strlen(vol->UNC) + (vol->prepath ? strlen(vol->prepath) : 0) + 1;
-	s = kmalloc(len, GFP_KERNEL);
-	if (!s)
-		return ERR_PTR(-ENOMEM);
-	snprintf(s, len, "%s%s", vol->UNC, vol->prepath ? vol->prepath : "");
-	return s;
+err_free_fullpath:
+	kfree(vi->vi_fullpath);
+err_free_vi:
+	kfree(vi);
+	return rc;
 }
 
 static inline struct dfs_cache_vol_info *find_vol(const char *fullpath)
 {
 	struct dfs_cache_vol_info *vi;
-	char *path = NULL;
-	int rc;
 
 	list_for_each_entry(vi, &dfs_cache.dc_vol_list, vi_list) {
-		path = get_vol_path(&vi->vi_vol);
-		if (IS_ERR(path))
-			return ERR_CAST(path);
-		cifs_dbg(FYI, "%s: fullpath: %s\n", __func__, path);
-
-		rc = strncasecmp(path, fullpath, strlen(path));
-		kfree(path);
-
-		if (!rc)
+		cifs_dbg(FYI, "%s: vi->vi_fullpath: %s\n", __func__,
+			 vi->vi_fullpath);
+		if (!strncasecmp(vi->vi_fullpath, fullpath,
+				 strlen(vi->vi_fullpath)))
 			return vi;
 	}
 	return ERR_PTR(-ENOENT);

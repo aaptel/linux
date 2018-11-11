@@ -523,6 +523,8 @@ extern int E_md4hash(const unsigned char *passwd, unsigned char *p16,
 			const struct nls_table *codepage);
 extern int SMBencrypt(unsigned char *passwd, const unsigned char *c8,
 			unsigned char *p24);
+extern void
+cifs_cleanup_volume_info_contents(struct smb_vol *volume_info);
 
 extern struct TCP_Server_Info *
 cifs_find_tcp_session(struct smb_vol *vol);
