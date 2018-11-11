@@ -1221,8 +1221,6 @@ int dfs_cache_update_vol(const char *fullpath, struct TCP_Server_Info *server)
 	cifs_dbg(FYI, "%s: updating volume info\n", __func__);
 	memcpy(&vi->vi_vol.dstaddr, &server->dstaddr,
 	       sizeof(vi->vi_vol.dstaddr));
-	memcpy(&vi->vi_vol.srcaddr, &server->srcaddr,
-	       sizeof(vi->vi_vol.srcaddr));
 	rc = 0;
 
 out:
