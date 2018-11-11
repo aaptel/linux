@@ -542,14 +542,19 @@ static inline void destroy_slab_cache(void)
 	kmem_cache_destroy(dfs_cache_slab);
 }
 
+static void inline free_vol_info(struct dfs_cache_vol_info *vi)
+{
+	list_del(&vi->vi_list);
+	cifs_cleanup_volume_info(&vi->vi_vol);
+	kfree(vi);
+}
+
 static inline void free_vol_list(void)
 {
 	struct dfs_cache_vol_info *vi, *nvi;
 
-	list_for_each_entry_safe(vi, nvi, &dfs_cache.dc_vol_list, vi_list) {
-		cifs_cleanup_volume_info(&vi->vi_vol);
-		kfree(vi);
-	}
+	list_for_each_entry_safe(vi, nvi, &dfs_cache.dc_vol_list, vi_list)
+		free_vol_info(vi);
 }
 
 /**
@@ -562,9 +567,7 @@ void dfs_cache_destroy(void)
 	free_vol_list();
 	mutex_destroy(&dfs_cache.dc_lock);
 
-	mutex_lock(&dfs_cache_list_lock);
 	flush_cache_ents();
-	mutex_unlock(&dfs_cache_list_lock);
 	destroy_slab_cache();
 	mutex_destroy(&dfs_cache_list_lock);
 
@@ -1131,7 +1134,7 @@ err_free_username:
 }
 
 /**
- * dfs_cache_add_vol - add a cifs volume during mount(8) that will be used by
+ * dfs_cache_add_vol - add a cifs volume during mount() that will be handled by
  * DFS cache refresh worker.
  *
  * @vol: cifs volume.
@@ -1158,14 +1161,95 @@ int dfs_cache_add_vol(struct smb_vol *vol)
 	return 0;
 }
 
+static inline char *get_vol_path(struct smb_vol *vol)
+{
+	char *s;
+	int len;
+
+	len = strlen(vol->UNC) + (vol->prepath ? strlen(vol->prepath) : 0) + 1;
+	s = kmalloc(len, GFP_KERNEL);
+	if (!s)
+		return ERR_PTR(-ENOMEM);
+	snprintf(s, len, "%s%s", vol->UNC, vol->prepath ? vol->prepath : "");
+	return s;
+}
+
+static inline struct dfs_cache_vol_info *find_vol(const char *fullpath)
+{
+	struct dfs_cache_vol_info *vi;
+	char *path = NULL;
+	int rc;
+
+	list_for_each_entry(vi, &dfs_cache.dc_vol_list, vi_list) {
+		path = get_vol_path(&vi->vi_vol);
+		if (IS_ERR(path))
+			return ERR_CAST(path);
+		cifs_dbg(FYI, "%s: fullpath: %s\n", __func__, path);
+
+		rc = strncasecmp(path, fullpath, strlen(path));
+		kfree(path);
+
+		if (!rc)
+			return vi;
+	}
+	return ERR_PTR(-ENOENT);
+}
+
 /**
- * dfs_cache_add_vol - remove a cifs volume from DFS cache that will no longer
- * be handled in refresh worker.
+ * dfs_cache_update_vol - update vol info in DFS cache after failover
  *
- * @fullpath: fullpath to look up in current volumes.
+ * @fullpath: fullpath to look up in volume list.
+ * @server: TCP ses pointer.
+ */
+int dfs_cache_update_vol(const char *fullpath, struct TCP_Server_Info *server)
+{
+	int rc;
+	struct dfs_cache_vol_info *vi;
+
+	if (!fullpath || !server)
+		return -EINVAL;
+
+	cifs_dbg(FYI, "%s: fullpath: %s\n", __func__, fullpath);
+
+	mutex_lock(&dfs_cache.dc_lock);
+
+	vi = find_vol(fullpath);
+	if (IS_ERR(vi)) {
+		rc = PTR_ERR(vi);
+		goto out;
+	}
+
+	cifs_dbg(FYI, "%s: updating volume info\n", __func__);
+	memcpy(&vi->vi_vol.dstaddr, &server->dstaddr,
+	       sizeof(vi->vi_vol.dstaddr));
+	memcpy(&vi->vi_vol.srcaddr, &server->srcaddr,
+	       sizeof(vi->vi_vol.srcaddr));
+	rc = 0;
+
+out:
+	mutex_unlock(&dfs_cache.dc_lock);
+	return rc;
+}
+
+/**
+ * dfs_cache_del_vol - remove volume info in DFS cache during umount()
+ *
+ * @fullpath: fullpath to look up in volume list.
  */
 void dfs_cache_del_vol(const char *fullpath)
 {
+	struct dfs_cache_vol_info *vi;
+
+	if (!fullpath || !*fullpath)
+		return;
+
+	cifs_dbg(FYI, "%s: fullpath: %s\n", __func__, fullpath);
+
+	mutex_lock(&dfs_cache.dc_lock);
+	vi = find_vol(fullpath);
+	if (!IS_ERR(vi))
+		free_vol_info(vi);
+	mutex_unlock(&dfs_cache.dc_lock);
 }
 
 /* Get all tcons that are within a DFS namespace and can be refreshed */
@@ -1190,25 +1274,58 @@ static void get_tcons(struct TCP_Server_Info *server, struct list_head *head)
 			list_add_tail(&ses->tcon_ipc->ulist, head);
 		}
 	}
-	if (!list_empty(head))
-		server->srv_count++;
 	spin_unlock(&cifs_tcp_ses_lock);
 }
 
 /* Refresh DFS cache entry from a given tcon */
-static inline void do_refresh_tcon(struct dfs_cache *dc, struct cifs_tcon *tcon)
+static void do_refresh_tcon(struct dfs_cache *dc, struct cifs_tcon *tcon)
 {
-	int rc;
+	int rc = 0;
 	unsigned int xid;
+	char *path;
+	unsigned int h;
+	struct dfs_cache_entry *ce;
+	struct dfs_info3_param *refs = NULL;
+	int numrefs = 0;
 
 	xid = get_xid();
 
-	rc = dfs_cache_find(xid, tcon->ses, dc->dc_nlsc, tcon->remap,
-			    tcon->dfs_path + 1, NULL, NULL, true);
-	if (rc) {
-		cifs_dbg(VFS, "%s: failed to refresh DFS cache entry: rc = %d\n",
-			 __func__, rc);
+	path = tcon->dfs_path + 1;
+
+	cifs_dbg(FYI, "%s: dfs path: %s\n", __func__, path);
+
+	mutex_lock(&dfs_cache_list_lock);
+	ce = find_cache_entry(path, &h, true);
+	mutex_unlock(&dfs_cache_list_lock);
+
+	if (IS_ERR(ce)) {
+		rc = PTR_ERR(ce);
+		goto out;
 	}
+
+	if (!cache_entry_expired(ce))
+		goto out;
+
+	if (unlikely(!tcon->ses->server->ops->get_dfs_refer)) {
+		rc = -ENOSYS;
+	} else {
+		rc = tcon->ses->server->ops->get_dfs_refer(xid, tcon->ses, path,
+							   &refs, &numrefs,
+							   dc->dc_nlsc,
+							   tcon->remap);
+		if (!rc) {
+			mutex_lock(&dfs_cache_list_lock);
+			ce = __update_cache_entry(path, refs, numrefs, true);
+			mutex_unlock(&dfs_cache_list_lock);
+			dump_refs(refs, numrefs);
+			free_dfs_info_array(refs, numrefs);
+			if (IS_ERR(ce))
+				rc = PTR_ERR(ce);
+		}
+	}
+	if (rc)
+		cifs_dbg(FYI, "%s: failed to update expired entry\n", __func__);
+out:
 	free_xid(xid);
 }
 
@@ -1224,22 +1341,25 @@ static void refresh_cache_worker(struct work_struct *work)
 	struct TCP_Server_Info *server;
 	LIST_HEAD(list);
 	struct cifs_tcon *tcon, *ntcon;
-	bool has_tcon;
 
 	cifs_dbg(FYI, "%s: refreshing DFS referral cache\n", __func__);
 
 	mutex_lock(&dc->dc_lock);
+
 	list_for_each_entry(vi, &dc->dc_vol_list, vi_list) {
-		server = cifs_get_tcp_session(&vi->vi_vol);
+		server = cifs_find_tcp_session(&vi->vi_vol);
+		if (!server)
+			continue;
+		if (server->tcpStatus != CifsGood)
+			goto next;
 		get_tcons(server, &list);
-		has_tcon = !list_empty(&list);
 		list_for_each_entry_safe(tcon, ntcon, &list, ulist) {
 			do_refresh_tcon(dc, tcon);
 			list_del_init(&tcon->ulist);
 			cifs_put_tcon(tcon);
 		}
-		if (has_tcon)
-			cifs_put_tcp_session(server, 1);
+	next:
+		cifs_put_tcp_session(server, 0);
 	}
 	queue_delayed_work(cifsiod_wq, &dc->dc_refresh, dc->dc_ttl * HZ);
 	mutex_unlock(&dc->dc_lock);

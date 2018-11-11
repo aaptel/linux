@@ -577,8 +577,13 @@ cifs_reconnect(struct TCP_Server_Info *server)
 		rc = dfs_cache_noreq_update_tgthint(cifs_sb->origin_fullpath + 1,
 						    tgt_it);
 		if (rc) {
-			cifs_dbg(VFS, "%s: failed to update DFS target hint\n",
-				 __func__);
+			cifs_dbg(VFS, "%s: failed to update DFS target hint: rc = %d\n",
+				 __func__, rc);
+		}
+		rc = dfs_cache_update_vol(cifs_sb->origin_fullpath, server);
+		if (rc) {
+			cifs_dbg(VFS, "%s: failed to update vol info in DFS cache: rc = %d\n",
+				 __func__, rc);
 		}
 	}
 	dfs_cache_free_tgts(&tgt_list);
@@ -2446,7 +2451,7 @@ static int match_server(struct TCP_Server_Info *server, struct smb_vol *vol)
 	return 1;
 }
 
-static struct TCP_Server_Info *
+struct TCP_Server_Info *
 cifs_find_tcp_session(struct smb_vol *vol)
 {
 	struct TCP_Server_Info *server;
@@ -2509,7 +2514,7 @@ cifs_put_tcp_session(struct TCP_Server_Info *server, int from_reconnect)
 		force_sig(SIGKILL, task);
 }
 
-struct TCP_Server_Info *
+static struct TCP_Server_Info *
 cifs_get_tcp_session(struct smb_vol *volume_info)
 {
 	struct TCP_Server_Info *tcp_ses = NULL;
@@ -4226,8 +4231,7 @@ static int mount_do_dfs_failover(const char *path,
 		/* Connect to next DFS target */
 		rc = setup_dfs_tgt_conn(path, tgt_it, cifs_sb, vol, xid, server,
 					ses, tcon);
-		if (rc == -EACCES || rc == -EOPNOTSUPP || !server ||
-		    !ses)
+		if (!rc || rc == -EACCES || rc == -EOPNOTSUPP)
 			break;
 	}
 	if (!rc) {
@@ -4402,7 +4406,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	int count;
 
 	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
-	if (!server || !ses)
+	if (rc == -EACCES || rc == -EOPNOTSUPP)
 		goto error;
 
 	root_path = build_unc_path_to_root(vol, cifs_sb, false);
@@ -4411,6 +4415,19 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		root_path = NULL;
 		goto error;
 	}
+
+	rc = dfs_cache_add_vol(vol);
+	if (rc)
+		goto error;
+
+	cifs_sb->origin_fullpath = build_unc_path_to_root(vol, cifs_sb, true);
+	if (IS_ERR(cifs_sb->origin_fullpath)) {
+		rc = PTR_ERR(cifs_sb->origin_fullpath);
+		goto error;
+	}
+	cifs_dbg(FYI, "%s: cifs_sb->origin_fullpath: %s\n", __func__,
+		 cifs_sb->origin_fullpath);
+
 	/*
 	 * Perform an unconditional check for whether there are DFS
 	 * referrals for this path without prefix, to provide support
@@ -4430,6 +4447,11 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		/* If we were redirected, reconnect to new target server */
 		mount_put_conns(cifs_sb, xid, server, ses, tcon);
 		rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
+		if (!rc) {
+			(void)dfs_cache_find(xid, ses, cifs_sb->local_nls,
+					     cifs_remap(cifs_sb), vol->UNC + 1,
+					     NULL, NULL, true);
+		}
 	}
 	if (rc) {
 		if (rc == -EACCES || rc == -EOPNOTSUPP)
@@ -4440,6 +4462,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		if (rc)
 			goto error;
 	}
+
 	/*
 	 * Save root tcon for additional DFS requests to update or create a new
 	 * DFS cache entry, or even perform DFS failover.
@@ -4513,21 +4536,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		full_path = NULL;
 		tcon->remap = cifs_remap(cifs_sb);
 	}
-	if (tcon->dfs_path) {
-		/* Save origin full path to be used during reconnect for DFS failover */
-		cifs_sb->origin_fullpath = kstrndup(tcon->dfs_path,
-						    strlen(tcon->dfs_path), GFP_KERNEL);
-		if (!cifs_sb->origin_fullpath)
-			rc = -ENOMEM;
-		else
-			rc = dfs_cache_add_vol(vol);
-		cifs_dbg(FYI, "%s: cifs_sb->origin_fullpath: %s\n", __func__,
-			 cifs_sb->origin_fullpath);
-	}
 	spin_unlock(&cifs_tcp_ses_lock);
-
-	if (rc)
-		goto error;
 
 	free_xid(xid);
 	return mount_setup_tlink(cifs_sb, ses, tcon);
@@ -4764,8 +4773,8 @@ cifs_umount(struct cifs_sb_info *cifs_sb)
 	kfree(cifs_sb->mountdata);
 	kfree(cifs_sb->prepath);
 #ifdef CONFIG_CIFS_DFS_UPCALL
-	kfree(cifs_sb->origin_fullpath);
 	dfs_cache_del_vol(cifs_sb->origin_fullpath);
+	kfree(cifs_sb->origin_fullpath);
 #endif
 	call_rcu(&cifs_sb->rcu, delayed_free);
 }
