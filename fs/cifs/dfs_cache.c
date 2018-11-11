@@ -542,7 +542,7 @@ static inline void destroy_slab_cache(void)
 	kmem_cache_destroy(dfs_cache_slab);
 }
 
-static void inline free_vol_info(struct dfs_cache_vol_info *vi)
+static void inline free_vol(struct dfs_cache_vol_info *vi)
 {
 	list_del(&vi->vi_list);
 	cifs_cleanup_volume_info(&vi->vi_vol);
@@ -554,7 +554,7 @@ static inline void free_vol_list(void)
 	struct dfs_cache_vol_info *vi, *nvi;
 
 	list_for_each_entry_safe(vi, nvi, &dfs_cache.dc_vol_list, vi_list)
-		free_vol_info(vi);
+		free_vol(vi);
 }
 
 /**
@@ -1248,7 +1248,7 @@ void dfs_cache_del_vol(const char *fullpath)
 	mutex_lock(&dfs_cache.dc_lock);
 	vi = find_vol(fullpath);
 	if (!IS_ERR(vi))
-		free_vol_info(vi);
+		free_vol(vi);
 	mutex_unlock(&dfs_cache.dc_lock);
 }
 

@@ -4406,7 +4406,12 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	int count;
 
 	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
-	if (rc == -EACCES || rc == -EOPNOTSUPP)
+	if (!rc && tcon) {
+		rc = is_path_remote(cifs_sb, vol, xid, server, tcon);
+		if (!rc)
+			goto out;
+	}
+	if (rc == -EACCES || rc == -EOPNOTSUPP || rc == -ENOENT)
 		goto error;
 
 	root_path = build_unc_path_to_root(vol, cifs_sb, false);
@@ -4538,6 +4543,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
 
+out:
 	free_xid(xid);
 	return mount_setup_tlink(cifs_sb, ses, tcon);
 
