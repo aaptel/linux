@@ -122,6 +122,7 @@ static inline void flush_cache_ent(struct dfs_cache_entry *ce)
 	hlist_del_init_rcu(&ce->ce_hlist);
 	kfree(ce->ce_path);
 	free_tgts(ce);
+	dfs_cache_count--;
 	call_rcu(&ce->ce_rcu, free_cache_entry);
 }
 
@@ -430,7 +431,6 @@ static void remove_oldest_entry(void)
 	cifs_dbg(FYI, "%s: removing entry", __func__);
 	dump_ce(to_del);
 	flush_cache_ent(to_del);
-	dfs_cache_count--;
 out:
 	rcu_read_unlock();
 }
