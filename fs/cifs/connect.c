@@ -4142,24 +4142,24 @@ static int inline get_next_dfs_tgt(const char *path,
 static int update_vol_info(const struct dfs_cache_tgt_iterator *tgt_it,
 			   struct smb_vol *fake_vol, struct smb_vol *vol)
 {
-	const char *unc = dfs_cache_get_tgt_name(tgt_it);
-	int len = strlen(unc) + 2;
-	struct smb_vol tmp;
+	const char *tgt = dfs_cache_get_tgt_name(tgt_it);
+	int len = strlen(tgt) + 2;
+	char *new_unc;
 
-	memcpy(&tmp, vol, sizeof(tmp));
-	memcpy(vol, fake_vol, sizeof(*vol));
-
-	vol->UNC = kmalloc(len, GFP_KERNEL);
-	if (!vol->UNC)
+	new_unc = kmalloc(len, GFP_KERNEL);
+	if (!new_unc)
 		return -ENOMEM;
-	snprintf(vol->UNC, len, "\\%s", unc);
+	snprintf(new_unc, len, "\\%s", tgt);
 
-	if (!fake_vol->prepath) {
-		vol->prepath = tmp.prepath;
-		tmp.prepath = NULL;
+	kfree(vol->UNC);
+	vol->UNC = new_unc;
+
+	if (fake_vol->prepath) {
+		kfree(vol->prepath);
+		vol->prepath = fake_vol->prepath;
+		fake_vol->prepath = NULL;
 	}
-
-	memcpy(fake_vol, &tmp, sizeof(*fake_vol));
+	memcpy(&vol->dstaddr, &fake_vol->dstaddr, sizeof(vol->dstaddr));
 
 	return 0;
 }
