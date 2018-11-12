@@ -779,12 +779,14 @@ err_free_path:
 
 /* Return target list of a DFS cache entry */
 static int get_tgt_list(const struct dfs_cache_entry *ce,
-			struct list_head *head)
+			struct dfs_cache_tgt_list *tl)
 {
 	int rc;
+	struct list_head *head = &tl->tl_list;
 	struct dfs_cache_tgt *t;
 	struct dfs_cache_tgt_iterator *it, *nit;
 
+	memset(tl, 0, sizeof(*tl));
 	INIT_LIST_HEAD(head);
 
 	list_for_each_entry(t, &ce->ce_tlist, t_list) {
@@ -806,6 +808,7 @@ static int get_tgt_list(const struct dfs_cache_entry *ce,
 		else
 			list_add_tail(&it->it_list, head);
 	}
+	tl->tl_numtgts = ce->ce_numtgts;
 
 	return 0;
 
@@ -844,7 +847,7 @@ err_free_it:
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		   const struct nls_table *nls_codepage, int remap,
 		   const char *path, struct dfs_info3_param *ref,
-		   struct list_head *tgt_list, bool check_ppath)
+		   struct dfs_cache_tgt_list *tgt_list, bool check_ppath)
 {
 	int rc;
 	struct dfs_cache_entry *ce;
@@ -886,7 +889,7 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
  * Return non-zero for other errors.
  */
 int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
-			 struct list_head *tgt_list)
+			 struct dfs_cache_tgt_list *tgt_list)
 {
 	int rc;
 	struct dfs_cache_entry *ce;

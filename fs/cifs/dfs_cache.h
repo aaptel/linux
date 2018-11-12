@@ -25,6 +25,11 @@
 #include <linux/list.h>
 #include "cifsglob.h"
 
+struct dfs_cache_tgt_list {
+	int tl_numtgts;
+	struct list_head tl_list;
+};
+
 struct dfs_cache_tgt_iterator {
 	char *it_name;
 	struct list_head it_list;
@@ -37,9 +42,10 @@ extern const struct file_operations dfscache_proc_fops;
 extern int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 			  const struct nls_table *nls_codepage, int remap,
 			  const char *path, struct dfs_info3_param *ref,
-			  struct list_head *tgt_list, bool check_ppath);
+			  struct dfs_cache_tgt_list *tgt_list,
+			  bool check_ppath);
 extern int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
-				struct list_head *tgt_list);
+				struct dfs_cache_tgt_list *tgt_list);
 extern int dfs_cache_update_tgthint(const unsigned int xid,
 				    struct cifs_ses *ses,
 				    const struct nls_table *nls_codepage,
@@ -57,38 +63,47 @@ extern int dfs_cache_update_vol(const char *fullpath,
 extern void dfs_cache_del_vol(const char *fullpath);
 
 static inline struct dfs_cache_tgt_iterator *
-dfs_cache_get_next_tgt(struct list_head *head,
+dfs_cache_get_next_tgt(struct dfs_cache_tgt_list *tl,
 		       struct dfs_cache_tgt_iterator *it)
 {
+	struct list_head *head = &tl->tl_list;
 	if (list_empty(head) || list_is_last(&it->it_list, head) || !it)
 		return NULL;
 	return list_next_entry(it, it_list);
 }
 
 static inline struct dfs_cache_tgt_iterator *
-dfs_cache_get_tgt_iterator(struct list_head *head)
+dfs_cache_get_tgt_iterator(struct dfs_cache_tgt_list *tl)
 {
+	struct list_head *head = &tl->tl_list;
 	return list_first_entry_or_null(head, struct dfs_cache_tgt_iterator,
 					it_list);
 }
 
-static inline void dfs_cache_free_tgts(struct list_head *list)
+static inline void dfs_cache_free_tgts(struct dfs_cache_tgt_list *tl)
 {
+	struct list_head *list = &tl->tl_list;
 	struct dfs_cache_tgt_iterator *it, *nit;
 
 	if (!list || list_empty(list))
 		return;
-
 	list_for_each_entry_safe(it, nit, list, it_list) {
 		kfree(it->it_name);
 		kfree(it);
 	}
+	tl->tl_numtgts = 0;
 }
 
 static inline const char *
 dfs_cache_get_tgt_name(const struct dfs_cache_tgt_iterator *it)
 {
 	return it ? it->it_name : NULL;
+}
+
+static inline int
+dfs_cache_get_nr_tgts(const struct dfs_cache_tgt_list *tl)
+{
+	return tl ? tl->tl_numtgts : -1;
 }
 
 #endif /* _CIFS_DFS_CACHE_H */

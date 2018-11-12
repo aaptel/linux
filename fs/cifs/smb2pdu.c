@@ -160,7 +160,7 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 			    struct cifs_tcon *tcon)
 {
 	int rc;
-	LIST_HEAD(list);
+	struct dfs_cache_tgt_list tl;
 	struct dfs_cache_tgt_iterator *it = NULL;
 	char tree[MAX_TREE_SIZE + 1];
 	const char *tcp_host;
@@ -177,15 +177,15 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 	if (!tcon->dfs_path)
 		return SMB2_tcon(0, tcon->ses, tcon->treeName, tcon, nlsc);
 
-	rc = dfs_cache_noreq_find(tcon->dfs_path + 1, NULL, &list);
+	rc = dfs_cache_noreq_find(tcon->dfs_path + 1, NULL, &tl);
 	if (rc)
 		return rc;
 
 	extract_unc_hostname(tcon->ses->server->hostname, &tcp_host,
 			     &tcp_host_len);
 
-	for (it = dfs_cache_get_tgt_iterator(&list); it;
-	     it = dfs_cache_get_next_tgt(&list, it)) {
+	for (it = dfs_cache_get_tgt_iterator(&tl); it;
+	     it = dfs_cache_get_next_tgt(&tl, it)) {
 		const char *tgt = dfs_cache_get_tgt_name(it);
 		extract_unc_hostname(tgt, &dfs_host, &dfs_host_len);
 
@@ -212,7 +212,7 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 		if (!rc)
 			tcon->need_refresh_dfscache = true;
 	}
-	dfs_cache_free_tgts(&list);
+	dfs_cache_free_tgts(&tl);
 	return rc;
 }
 #else
@@ -230,6 +230,7 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon)
 	struct nls_table *nls_codepage;
 	struct cifs_ses *ses;
 	struct TCP_Server_Info *server;
+	int retries;
 
 	/*
 	 * SMB2s NegProt, SessSetup, Logoff do not have tcon yet so
@@ -263,9 +264,12 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon)
 	ses = tcon->ses;
 	server = ses->server;
 
+	retries = server->nr_targets;
+
 	/*
-	 * Give demultiplex thread up to 10 seconds to reconnect, should be
-	 * greater than cifs socket timeout which is 7 seconds
+	 * Give demultiplex thread up to 10 seconds to each target available for
+	 * reconnect -- should be greater than cifs socket timeout which is 7
+	 * seconds.
 	 */
 	while (server->tcpStatus == CifsNeedReconnect) {
 		/*
@@ -296,6 +300,9 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon)
 		if (server->tcpStatus != CifsNeedReconnect)
 			break;
 
+		if (--retries)
+			continue;
+
 		/*
 		 * on "soft" mounts we wait once. Hard mounts keep
 		 * retrying until process is killed or server comes
@@ -305,6 +312,7 @@ smb2_reconnect(__le16 smb2_command, struct cifs_tcon *tcon)
 			cifs_dbg(FYI, "gave up waiting on reconnect in smb_init\n");
 			return -EHOSTDOWN;
 		}
+		retries = server->nr_targets;
 	}
 
 	if (!tcon->ses->need_reconnect && !tcon->need_reconnect)

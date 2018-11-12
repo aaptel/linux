@@ -701,6 +701,7 @@ struct TCP_Server_Info {
 	struct delayed_work reconnect; /* reconnect workqueue job */
 	struct mutex reconnect_mutex; /* prevent simultaneous reconnects */
 	unsigned long echo_interval;
+	int nr_targets; /* number of targets available for reconnect */
 };
 
 static inline unsigned int

@@ -363,7 +363,7 @@ static inline struct cifs_sb_info *find_super_by_tcp(struct TCP_Server_Info *ser
 
 static void reconn_inval_dfs_target(struct TCP_Server_Info *server,
 				    struct cifs_sb_info *cifs_sb,
-				    struct list_head *tgt_list,
+				    struct dfs_cache_tgt_list *tgt_list,
 				    struct dfs_cache_tgt_iterator **tgt_it)
 {
 	const char *name;
@@ -372,7 +372,7 @@ static void reconn_inval_dfs_target(struct TCP_Server_Info *server,
 	char *unc;
 	int len;
 
-	if (!cifs_sb->origin_fullpath || !tgt_list || list_empty(tgt_list))
+	if (!cifs_sb->origin_fullpath || !tgt_list || !server->nr_targets)
 		return;
 
 	if (!*tgt_it) {
@@ -426,12 +426,12 @@ static void reconn_inval_dfs_target(struct TCP_Server_Info *server,
 }
 
 static inline int reconn_setup_dfs_targets(struct cifs_sb_info *cifs_sb,
-					   struct list_head *list,
+					   struct dfs_cache_tgt_list *tl,
 					   struct dfs_cache_tgt_iterator **it)
 {
 	if (!cifs_sb->origin_fullpath)
 		return -EOPNOTSUPP;
-	return dfs_cache_noreq_find(cifs_sb->origin_fullpath + 1, NULL, list);
+	return dfs_cache_noreq_find(cifs_sb->origin_fullpath + 1, NULL, tl);
 }
 #endif
 
@@ -454,11 +454,32 @@ cifs_reconnect(struct TCP_Server_Info *server)
 	struct list_head retry_list;
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	struct cifs_sb_info *cifs_sb;
-	LIST_HEAD(tgt_list);
+	struct dfs_cache_tgt_list tgt_list;
 	struct dfs_cache_tgt_iterator *tgt_it = NULL;
 #endif
 
 	spin_lock(&GlobalMid_Lock);
+#ifdef CONFIG_CIFS_DFS_UPCALL
+	cifs_sb = find_super_by_tcp(server);
+	if (IS_ERR(cifs_sb)) {
+		rc = PTR_ERR(cifs_sb);
+	} else {
+		rc = reconn_setup_dfs_targets(cifs_sb, &tgt_list, &tgt_it);
+		if (rc) {
+			cifs_dbg(VFS, "%s: no target servers for DFS failover\n",
+				 __func__);
+		}
+	}
+	if (!rc) {
+		server->nr_targets = dfs_cache_get_nr_tgts(&tgt_list);
+	} else {
+		server->nr_targets = 1;
+		cifs_dbg(VFS, "%s: will not do DFS failover: rc = %d\n",
+			 __func__, rc);
+	}
+	cifs_dbg(FYI, "%s: will retry %d target(s)\n", __func__,
+		 server->nr_targets);
+#endif
 	if (server->tcpStatus == CifsExiting) {
 		/* the demux thread will exit normally
 		next time through the loop */
@@ -520,18 +541,6 @@ cifs_reconnect(struct TCP_Server_Info *server)
 		list_move(&mid_entry->qhead, &retry_list);
 	}
 	spin_unlock(&GlobalMid_Lock);
-#ifdef CONFIG_CIFS_DFS_UPCALL
-	cifs_sb = find_super_by_tcp(server);
-	if (IS_ERR(cifs_sb)) {
-		cifs_dbg(VFS, "%s: will not do DFS failover\n", __func__);
-	} else {
-		rc = reconn_setup_dfs_targets(cifs_sb, &tgt_list, &tgt_it);
-		if (rc) {
-			cifs_dbg(VFS, "%s: no target servers for DFS failover\n",
-				 __func__);
-		}
-	}
-#endif
 	mutex_unlock(&server->srv_mutex);
 
 	cifs_dbg(FYI, "%s: issuing mid callbacks\n", __func__);
@@ -2622,6 +2631,8 @@ smbd_connected:
 	}
 	tcp_ses->tcpStatus = CifsNeedNegotiate;
 
+	tcp_ses->nr_targets = 1;
+
 	/* thread spawned, put it on the list */
 	spin_lock(&cifs_tcp_ses_lock);
 	list_add(&tcp_ses->tcp_ses_list, &cifs_tcp_ses_list);
@@ -4123,19 +4134,13 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 }
 
 static int inline get_next_dfs_tgt(const char *path,
-				   struct list_head *tgt_list,
+				   struct dfs_cache_tgt_list *tgt_list,
 				   struct dfs_cache_tgt_iterator **tgt_it)
 {
-	int rc;
-
-	if (list_empty(tgt_list)) {
-		rc = dfs_cache_noreq_find(path, NULL, tgt_list);
-		if (rc)
-			return rc;
+	if (!*tgt_it)
 		*tgt_it = dfs_cache_get_tgt_iterator(tgt_list);
-	} else {
+	else
 		*tgt_it = dfs_cache_get_next_tgt(tgt_list, *tgt_it);
-	}
 	return !*tgt_it ? -EHOSTDOWN : 0;
 }
 
@@ -4228,11 +4233,15 @@ static int mount_do_dfs_failover(const char *path,
 				 struct cifs_tcon **tcon)
 {
 	int rc;
-	LIST_HEAD(tgt_list);
+	struct dfs_cache_tgt_list tgt_list;
 	struct dfs_cache_tgt_iterator *tgt_it = NULL;
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_NO_DFS)
 		return -EOPNOTSUPP;
+
+	rc = dfs_cache_noreq_find(path, NULL, &tgt_list);
+	if (rc)
+		return rc;
 
 	for (;;) {
 		/* Get next DFS target server - if any */
