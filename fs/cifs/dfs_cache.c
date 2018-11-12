@@ -429,7 +429,7 @@ static void remove_oldest_entry(void)
 	}
 	cifs_dbg(FYI, "%s: removing entry", __func__);
 	dump_ce(to_del);
-	flush_cache_ent(ce);
+	flush_cache_ent(to_del);
 	dfs_cache_count--;
 out:
 	rcu_read_unlock();
