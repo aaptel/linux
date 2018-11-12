@@ -1344,9 +1344,11 @@ static void refresh_cache_worker(struct work_struct *work)
 	mutex_lock(&dc->dc_lock);
 
 	list_for_each_entry(vi, &dc->dc_vol_list, vi_list) {
+		cifs_dbg(FYI, "%s: vol path: %s\n", __func__, vi->vi_fullpath);
 		server = cifs_find_tcp_session(&vi->vi_vol);
 		if (!server)
 			continue;
+		cifs_dbg(FYI, "%s: found a tcp ses: %p\n", __func__, server);
 		if (server->tcpStatus != CifsGood)
 			goto next;
 		get_tcons(server, &list);

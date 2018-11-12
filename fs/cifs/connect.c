@@ -4139,6 +4139,31 @@ static int inline get_next_dfs_tgt(const char *path,
 	return !*tgt_it ? -EHOSTDOWN : 0;
 }
 
+static int update_vol_info(const struct dfs_cache_tgt_iterator *tgt_it,
+			   struct smb_vol *fake_vol, struct smb_vol *vol)
+{
+	const char *unc = dfs_cache_get_tgt_name(tgt_it);
+	int len = strlen(unc) + 2;
+	struct smb_vol tmp;
+
+	memcpy(&tmp, vol, sizeof(tmp));
+	memcpy(vol, fake_vol, sizeof(*vol));
+
+	vol->UNC = kmalloc(len, GFP_KERNEL);
+	if (!vol->UNC)
+		return -ENOMEM;
+	snprintf(vol->UNC, len, "\\%s", unc);
+
+	if (!fake_vol->prepath) {
+		vol->prepath = tmp.prepath;
+		tmp.prepath = NULL;
+	}
+
+	memcpy(fake_vol, &tmp, sizeof(*fake_vol));
+
+	return 0;
+}
+
 static int setup_dfs_tgt_conn(const char *path,
 			      const struct dfs_cache_tgt_iterator *tgt_it,
 			      struct cifs_sb_info *cifs_sb,
@@ -4184,23 +4209,9 @@ static int setup_dfs_tgt_conn(const char *path,
 		rc = mount_get_conns(&fake_vol, cifs_sb, xid, server, ses, tcon);
 		if (!rc) {
 			/* Were were able to connect to new target server.
-			 * Update current volume info with new UNC path.
+			 * Update current volume info with new target server.
 			 */
-			const char *unc = dfs_cache_get_tgt_name(tgt_it);
-			int len = strlen(unc) + 2;
-
-			kfree(vol->UNC);
-			vol->UNC = kmalloc(len, GFP_KERNEL);
-			if (!vol->UNC) {
-				rc = -ENOMEM;
-			} else {
-				snprintf(vol->UNC, len, "\\%s", unc);
-				if (fake_vol.prepath) {
-					kfree(vol->prepath);
-					vol->prepath = fake_vol.prepath;
-					fake_vol.prepath = NULL;
-				}
-			}
+			rc = update_vol_info(tgt_it, &fake_vol, vol);
 		}
 	}
 	cifs_cleanup_volume_info_contents(&fake_vol);
@@ -4429,7 +4440,6 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		full_path = NULL;
 		goto error;
 	}
-
 	/*
 	 * Perform an unconditional check for whether there are DFS
 	 * referrals for this path without prefix, to provide support
@@ -4449,11 +4459,6 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		/* If we were redirected, reconnect to new target server */
 		mount_put_conns(cifs_sb, xid, server, ses, tcon);
 		rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
-		if (!rc) {
-			(void)dfs_cache_find(xid, ses, cifs_sb->local_nls,
-					     cifs_remap(cifs_sb), vol->UNC + 1,
-					     NULL, NULL, true);
-		}
 	}
 	if (rc) {
 		if (rc == -EACCES || rc == -EOPNOTSUPP)
@@ -4465,6 +4470,16 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 			goto error;
 	}
 
+	kfree(root_path);
+	root_path = build_unc_path_to_root(vol, cifs_sb, false);
+	if (IS_ERR(root_path)) {
+		rc = PTR_ERR(root_path);
+		root_path = NULL;
+		goto error;
+	}
+	/* Cache out resolved root server */
+	(void)dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
+			     root_path + 1, NULL, NULL, true);
 	/*
 	 * Save root tcon for additional DFS requests to update or create a new
 	 * DFS cache entry, or even perform DFS failover.
@@ -4532,12 +4547,12 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		goto error;
 
 	spin_lock(&cifs_tcp_ses_lock);
-	/* Save full path in new tcon to do failover when reconnecting tcons */
-	kfree(tcon->dfs_path);
-	tcon->dfs_path = full_path;
-	full_path = NULL;
-	tcon->remap = cifs_remap(cifs_sb);
-
+	if (!tcon->dfs_path) {
+		/* Save full path in new tcon to do failover when reconnecting tcons */
+		tcon->dfs_path = full_path;
+		full_path = NULL;
+		tcon->remap = cifs_remap(cifs_sb);
+	}
 	cifs_sb->origin_fullpath = kstrndup(tcon->dfs_path,
 					    strlen(tcon->dfs_path), GFP_KERNEL);
 	if (!cifs_sb->origin_fullpath) {
@@ -4546,9 +4561,6 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		goto error;
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
-
-	cifs_dbg(FYI, "%s: cifs_sb->origin_fullpath: %s\n", __func__,
-		 cifs_sb->origin_fullpath);
 
 	rc = dfs_cache_add_vol(vol, cifs_sb->origin_fullpath);
 	if (rc) {
