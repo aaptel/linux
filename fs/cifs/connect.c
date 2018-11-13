@@ -4428,8 +4428,10 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
 	if (!rc && tcon) {
 		rc = is_path_remote(cifs_sb, vol, xid, server, tcon);
-		if (!rc)
+		if (!rc) {
+			cifs_sb->validate_uniqueid = true;
 			goto out;
+		}
 		if (rc != -EREMOTE)
 			goto error;
 	}
@@ -4576,6 +4578,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		kfree(cifs_sb->origin_fullpath);
 		goto error;
 	}
+	cifs_sb->validate_uniqueid = false;
 
 out:
 	free_xid(xid);
@@ -4608,6 +4611,7 @@ int __cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		if (rc)
 			goto error;
 	}
+	cifs_sb->validate_uniqueid = true;
 
 	free_xid(xid);
 

@@ -863,6 +863,7 @@ cifs_get_inode_info(struct inode **inode, const char *full_path,
 		} else
 			fattr.cf_uniqueid = iunique(sb, ROOT_I);
 	} else {
+		validinum |= !cifs_sb->validate_uniqueid;
 		if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SERVER_INUM) &&
 		    validinum == false && server->ops->get_srv_inum) {
 			/*
