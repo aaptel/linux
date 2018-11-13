@@ -4213,7 +4213,8 @@ static int setup_dfs_tgt_conn(const char *path,
 		mount_put_conns(cifs_sb, *xid, *server, *ses, *tcon);
 		rc = mount_get_conns(&fake_vol, cifs_sb, xid, server, ses, tcon);
 		if (!rc) {
-			/* Were were able to connect to new target server.
+			/*
+			 * Were were able to connect to new target server.
 			 * Update current volume info with new target server.
 			 */
 			rc = update_vol_info(tgt_it, &fake_vol, vol);
@@ -4428,10 +4429,8 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	rc = mount_get_conns(vol, cifs_sb, &xid, &server, &ses, &tcon);
 	if (!rc && tcon) {
 		rc = is_path_remote(cifs_sb, vol, xid, server, tcon);
-		if (!rc) {
-			cifs_sb->validate_uniqueid = true;
+		if (!rc)
 			goto out;
-		}
 		if (rc != -EREMOTE)
 			goto error;
 	}
@@ -4578,8 +4577,12 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		kfree(cifs_sb->origin_fullpath);
 		goto error;
 	}
-	cifs_sb->validate_uniqueid = false;
-
+	/*
+	 * There isn't much we can do about validating unique IDs against the
+	 * new ones that we receiveid from server after failover That is, after
+	 * reconnecting to new target, the unique id will differ.
+	 */
+	cifs_autodisable_serverino(cifs_sb);
 out:
 	free_xid(xid);
 	return mount_setup_tlink(cifs_sb, ses, tcon);
@@ -4611,7 +4614,6 @@ int __cifs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		if (rc)
 			goto error;
 	}
-	cifs_sb->validate_uniqueid = true;
 
 	free_xid(xid);
 

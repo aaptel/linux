@@ -82,11 +82,5 @@ struct cifs_sb_info {
 	 * do failover properly.
 	 */
 	char *origin_fullpath; /* \\HOST\SHARE\[OPTIONAL PATH] */
-	/*
-	 * There isn't much we can do about validating unique IDs against the
-	 * new ones that we receiveid from server after failover That is, after
-	 * reconnecting to new target, the unique id will differ.
-	 */
-	bool validate_uniqueid;
 };
 #endif				/* _CIFS_FS_SB_H */
