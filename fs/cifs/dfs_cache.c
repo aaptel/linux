@@ -409,9 +409,9 @@ static int copy_ref_data(const struct dfs_info3_param *refs, int numrefs,
 }
 
 /* Allocate a new cache entry */
-static struct dfs_cache_entry *alloc_cache_entry(const char *path,
-						 const struct dfs_info3_param *refs,
-						 int numrefs)
+static struct dfs_cache_entry *
+alloc_cache_entry(const char *path, const struct dfs_info3_param *refs,
+		  int numrefs)
 {
 	struct dfs_cache_entry *ce;
 	int rc;
@@ -461,10 +461,9 @@ out:
 }
 
 /* Add a new DFS cache entry */
-static inline struct dfs_cache_entry *add_cache_entry(unsigned int hash,
-						      const char *path,
-						      const struct dfs_info3_param *refs,
-						      int numrefs)
+static inline struct dfs_cache_entry *
+add_cache_entry(unsigned int hash, const char *path,
+		const struct dfs_info3_param *refs, int numrefs)
 {
 	struct dfs_cache_entry *ce;
 
@@ -489,9 +488,8 @@ static inline struct dfs_cache_entry *add_cache_entry(unsigned int hash,
 	return ce;
 }
 
-static inline struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
-							 const char *path,
-							 int len)
+static struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
+						  const char *path, int len)
 {
 	struct dfs_cache_entry *ce;
 	bool found = false;
@@ -519,48 +517,16 @@ static inline struct dfs_cache_entry *__find_cache_entry(unsigned int hash,
 /*
  * Find a DFS cache entry in hash table and optionally check prefix path against
  * @path.
+ * Use whole path components in the match.
  * Return ERR_PTR(-ENOENT) if the entry is not found.
  */
-static struct dfs_cache_entry *find_cache_entry(const char *path,
-						unsigned int *hash,
-						bool check_ppath)
+static inline struct dfs_cache_entry *find_cache_entry(const char *path,
+						       unsigned int *hash)
 {
-	const char *s, *q;
-	int len;
-	struct dfs_cache_entry *ce;
-	char sep = path[0];
+	int len = strlen(path);
 
-	len = strlen(path);
-
-	if (!check_ppath) {
-		/* Use whole path components in the match */
-		*hash = cache_entry_hash(path, len);
-		return __find_cache_entry(*hash, path, len);
-	}
-
-	s = strchr(path + 1, sep);
-	s = strchr(s + 1, sep);
-	if (!s) {
-		*hash = cache_entry_hash(path, len);
-		return __find_cache_entry(*hash, path, len);
-	}
-
-	/*
-	 * Check each prefix path component against @path and find longest
-	 * match.
-	 */
-	--s;
-	q = path + len - 1;
-
-	do {
-		len = q - path + 1;
-		*hash = cache_entry_hash(path, len);
-		ce = __find_cache_entry(*hash, path, len);
-		if (!IS_ERR(ce))
-			break;
-		while (*q-- != sep);
-	} while (q >= s);
-	return ce;
+	*hash = cache_entry_hash(path, len);
+	return __find_cache_entry(*hash, path, len);
 }
 
 static inline void destroy_slab_cache(void)
@@ -602,17 +568,16 @@ void dfs_cache_destroy(void)
 	cifs_dbg(FYI, "%s: destroyed DFS referral cache\n", __func__);
 }
 
-static inline struct dfs_cache_entry *__update_cache_entry(const char *path,
-							   const struct dfs_info3_param *refs,
-							   int numrefs,
-							   bool check_ppath)
+static inline struct dfs_cache_entry *
+__update_cache_entry(const char *path, const struct dfs_info3_param *refs,
+		     int numrefs)
 {
 	int rc;
 	unsigned int h;
 	struct dfs_cache_entry *ce;
 	char *s, *th = NULL;
 
-	ce = find_cache_entry(path, &h, check_ppath);
+	ce = find_cache_entry(path, &h);
 	if (IS_ERR(ce))
 		return ce;
 
@@ -636,13 +601,10 @@ static inline struct dfs_cache_entry *__update_cache_entry(const char *path,
 }
 
 /* Update an expired cache entry by getting a new DFS referral from server */
-static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
-						  struct cifs_ses *ses,
-						  const struct nls_table *nls_codepage,
-						  int remap,
-						  const char *path,
-						  bool check_ppath,
-						  struct dfs_cache_entry *ce)
+static struct dfs_cache_entry *
+update_cache_entry(const unsigned int xid, struct cifs_ses *ses,
+		   const struct nls_table *nls_codepage, int remap,
+		   const char *path, struct dfs_cache_entry *ce)
 {
 	int rc;
 	struct dfs_info3_param *refs = NULL;
@@ -665,7 +627,7 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
 	if (rc)
 		ce = ERR_PTR(rc);
 	else
-		ce = __update_cache_entry(path, refs, numrefs, check_ppath);
+		ce = __update_cache_entry(path, refs, numrefs);
 
 	dump_refs(refs, numrefs);
 	free_dfs_info_array(refs, numrefs);
@@ -682,11 +644,10 @@ static struct dfs_cache_entry *update_cache_entry(const unsigned int xid,
  * For interlinks, __cifs_dfs_mount() and expand_dfs_referral() are supposed to
  * handle them properly.
  */
-static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
-						 struct cifs_ses *ses,
-						 const struct nls_table *nls_codepage,
-						 int remap, const char *path,
-						 bool check_ppath, bool noreq)
+static struct dfs_cache_entry *
+do_dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
+		  const struct nls_table *nls_codepage, int remap,
+		  const char *path, bool noreq)
 {
 	int rc;
 	unsigned int h;
@@ -696,7 +657,7 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 
 	cifs_dbg(FYI, "%s: search path: %s\n", __func__, path);
 
-	ce = find_cache_entry(path, &h, check_ppath);
+	ce = find_cache_entry(path, &h);
 	if (IS_ERR(ce)) {
 		cifs_dbg(FYI, "%s: cache miss\n", __func__);
 		/*
@@ -759,8 +720,8 @@ static struct dfs_cache_entry *do_dfs_cache_find(const unsigned int xid,
 
 	if (cache_entry_expired(ce)) {
 		cifs_dbg(FYI, "%s: expired cache entry\n", __func__);
-		ce = update_cache_entry(xid, ses, nls_codepage, remap,
-					path, check_ppath, ce);
+		ce = update_cache_entry(xid, ses, nls_codepage, remap, path,
+					ce);
 		if (IS_ERR(ce)) {
 			cifs_dbg(FYI, "%s: failed to update expired entry\n",
 				 __func__);
@@ -865,15 +826,13 @@ err_free_it:
  *
  * @ref: when non-NULL, store single DFS referral result in it.
  * @tgt_list: when non-NULL, store complete DFS target list in it.
- * @check_ppath: when true, do longest-match of prefix paths of @path
- * against each cache entry.
  *
  * Return zero if the target was found, otherwise non-zero.
  */
 int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		   const struct nls_table *nls_codepage, int remap,
 		   const char *path, struct dfs_info3_param *ref,
-		   struct dfs_cache_tgt_list *tgt_list, bool check_ppath)
+		   struct dfs_cache_tgt_list *tgt_list)
 {
 	int rc;
 	char *npath;
@@ -887,8 +846,7 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		return rc;
 
 	mutex_lock(&dfs_cache_list_lock);
-	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, npath,
-			       check_ppath, false);
+	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, npath, false);
 	if (!IS_ERR(ce)) {
 		if (ref)
 			rc = setup_ref(npath, ce, ref, get_tgt_name(ce));
@@ -935,7 +893,7 @@ int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
 		return rc;
 
 	mutex_lock(&dfs_cache_list_lock);
-	ce = do_dfs_cache_find(0, NULL, NULL, 0, npath, true, true);
+	ce = do_dfs_cache_find(0, NULL, NULL, 0, npath, true);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
@@ -991,8 +949,7 @@ int dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
 	cifs_dbg(FYI, "%s: path: %s\n", __func__, npath);
 
 	mutex_lock(&dfs_cache_list_lock);
-	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, npath, true,
-			       false);
+	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, npath, false);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
@@ -1053,7 +1010,7 @@ int dfs_cache_noreq_update_tgthint(const char *path,
 
 	mutex_lock(&dfs_cache_list_lock);
 
-	ce = do_dfs_cache_find(0, NULL, NULL, 0, npath, true, true);
+	ce = do_dfs_cache_find(0, NULL, NULL, 0, npath, true);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
@@ -1113,7 +1070,7 @@ int dfs_cache_get_tgt_referral(const char *path,
 
 	mutex_lock(&dfs_cache_list_lock);
 
-	ce = find_cache_entry(npath, &h, true);
+	ce = find_cache_entry(npath, &h);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
@@ -1344,7 +1301,7 @@ static void do_refresh_tcon(struct dfs_cache *dc, struct cifs_tcon *tcon)
 	cifs_dbg(FYI, "%s: dfs path: %s\n", __func__, path);
 
 	mutex_lock(&dfs_cache_list_lock);
-	ce = find_cache_entry(path, &h, true);
+	ce = find_cache_entry(path, &h);
 	mutex_unlock(&dfs_cache_list_lock);
 
 	if (IS_ERR(ce)) {
@@ -1364,7 +1321,7 @@ static void do_refresh_tcon(struct dfs_cache *dc, struct cifs_tcon *tcon)
 							   tcon->remap);
 		if (!rc) {
 			mutex_lock(&dfs_cache_list_lock);
-			ce = __update_cache_entry(path, refs, numrefs, true);
+			ce = __update_cache_entry(path, refs, numrefs);
 			mutex_unlock(&dfs_cache_list_lock);
 			dump_refs(refs, numrefs);
 			free_dfs_info_array(refs, numrefs);

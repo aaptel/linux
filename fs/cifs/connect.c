@@ -4108,7 +4108,7 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	ref_path = check_prefix ? full_path + 1 : volume_info->UNC + 1;
 
 	rc = dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
-			    ref_path, &referral, NULL, false);
+			    ref_path, &referral, NULL);
 	if (!rc) {
 		char *fake_devname = NULL;
 
@@ -4490,7 +4490,7 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 	}
 	/* Cache out resolved root server */
 	(void)dfs_cache_find(xid, ses, cifs_sb->local_nls, cifs_remap(cifs_sb),
-			     root_path + 1, NULL, NULL, true);
+			     root_path + 1, NULL, NULL);
 	/*
 	 * Save root tcon for additional DFS requests to update or create a new
 	 * DFS cache entry, or even perform DFS failover.

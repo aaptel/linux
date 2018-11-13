@@ -42,8 +42,7 @@ extern const struct file_operations dfscache_proc_fops;
 extern int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 			  const struct nls_table *nls_codepage, int remap,
 			  const char *path, struct dfs_info3_param *ref,
-			  struct dfs_cache_tgt_list *tgt_list,
-			  bool check_ppath);
+			  struct dfs_cache_tgt_list *tgt_list);
 extern int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
 				struct dfs_cache_tgt_list *tgt_list);
 extern int dfs_cache_update_tgthint(const unsigned int xid,
