@@ -88,6 +88,7 @@ static inline void dfs_cache_free_tgts(struct dfs_cache_tgt_list *tl)
 	if (!tl || list_empty(&tl->tl_list))
 		return;
 	list_for_each_entry_safe(it, nit, &tl->tl_list, it_list) {
+		list_del(&it->it_list);
 		kfree(it->it_name);
 		kfree(it);
 	}
