@@ -849,7 +849,7 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, npath, false);
 	if (!IS_ERR(ce)) {
 		if (ref)
-			rc = setup_ref(npath, ce, ref, get_tgt_name(ce));
+			rc = setup_ref(path, ce, ref, get_tgt_name(ce));
 		else
 			rc = 0;
 		if (!rc && tgt_list)
@@ -900,7 +900,7 @@ int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
 	}
 
 	if (ref)
-		rc = setup_ref(npath, ce, ref, get_tgt_name(ce));
+		rc = setup_ref(path, ce, ref, get_tgt_name(ce));
 	else
 		rc = 0;
 	if (!rc && tgt_list)
@@ -1078,7 +1078,7 @@ int dfs_cache_get_tgt_referral(const char *path,
 
 	cifs_dbg(FYI, "%s: target name: %s\n", __func__, it->it_name);
 
-	rc = setup_ref(npath, ce, ref, it->it_name);
+	rc = setup_ref(path, ce, ref, it->it_name);
 
 out:
 	mutex_unlock(&dfs_cache_list_lock);

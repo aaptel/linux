@@ -65,8 +65,8 @@ static inline struct dfs_cache_tgt_iterator *
 dfs_cache_get_next_tgt(struct dfs_cache_tgt_list *tl,
 		       struct dfs_cache_tgt_iterator *it)
 {
-	struct list_head *head = &tl->tl_list;
-	if (list_empty(head) || list_is_last(&it->it_list, head) || !it)
+	if (!tl || list_empty(&tl->tl_list) || !it ||
+	    list_is_last(&it->it_list, &tl->tl_list))
 		return NULL;
 	return list_next_entry(it, it_list);
 }
@@ -74,19 +74,20 @@ dfs_cache_get_next_tgt(struct dfs_cache_tgt_list *tl,
 static inline struct dfs_cache_tgt_iterator *
 dfs_cache_get_tgt_iterator(struct dfs_cache_tgt_list *tl)
 {
-	struct list_head *head = &tl->tl_list;
-	return list_first_entry_or_null(head, struct dfs_cache_tgt_iterator,
+	if (!tl)
+		return NULL;
+	return list_first_entry_or_null(&tl->tl_list,
+					struct dfs_cache_tgt_iterator,
 					it_list);
 }
 
 static inline void dfs_cache_free_tgts(struct dfs_cache_tgt_list *tl)
 {
-	struct list_head *list = &tl->tl_list;
 	struct dfs_cache_tgt_iterator *it, *nit;
 
-	if (!list || list_empty(list))
+	if (!tl || list_empty(&tl->tl_list))
 		return;
-	list_for_each_entry_safe(it, nit, list, it_list) {
+	list_for_each_entry_safe(it, nit, &tl->tl_list, it_list) {
 		kfree(it->it_name);
 		kfree(it);
 	}
@@ -102,7 +103,7 @@ dfs_cache_get_tgt_name(const struct dfs_cache_tgt_iterator *it)
 static inline int
 dfs_cache_get_nr_tgts(const struct dfs_cache_tgt_list *tl)
 {
-	return tl ? tl->tl_numtgts : -1;
+	return tl ? tl->tl_numtgts : 0;
 }
 
 #endif /* _CIFS_DFS_CACHE_H */
