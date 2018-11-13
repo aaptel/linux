@@ -305,6 +305,7 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	int rc;
 	struct vfsmount *mnt;
 	struct tcon_link *tlink;
+	char sep;
 
 	cifs_dbg(FYI, "in %s\n", __func__);
 	BUG_ON(IS_ROOT(mntpt));
@@ -330,14 +331,16 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 
 	cifs_dbg(FYI, "%s: full_path: %s\n", __func__, full_path);
 
+	sep = CIFS_DIR_SEP(cifs_sb);
+
 	root_path = kstrndup(full_path, strlen(full_path), GFP_KERNEL);
 	if (!root_path) {
 		mnt = ERR_PTR(-ENOMEM);
 		goto free_full_path;
 	}
-	c = strchr(root_path + 2, '\\');
+	c = strchr(root_path + 2, sep);
 	if (c) {
-		c = strchr(c + 1, '\\');
+		c = strchr(c + 1, sep);
 		if (!c) {
 			mnt = ERR_PTR(-EINVAL);
 			goto free_root_path;

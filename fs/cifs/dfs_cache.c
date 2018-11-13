@@ -88,6 +88,30 @@ static struct hlist_head dfs_cache_htable[DFS_CACHE_HTABLE_SIZE];
 
 static void refresh_cache_worker(struct work_struct *work);
 
+static inline bool is_path_valid(const char *path)
+{
+	return path && (strchr(path + 1, '\\') || strchr(path + 1, '/'));
+}
+
+static inline int get_normalized_path(const char *path, char **npath)
+{
+	if (*path == '\\') {
+		*npath = (char *)path;
+	} else {
+		*npath = kstrndup(path, strlen(path), GFP_KERNEL);
+		if (!*npath)
+			return -ENOMEM;
+		convert_delimiter(*npath, '\\');
+	}
+	return 0;
+}
+
+static inline void free_normalized_path(const char *path, char *npath)
+{
+	if (path != npath)
+		kfree(npath);
+}
+
 static inline bool cache_entry_expired(const struct dfs_cache_entry *ce)
 {
 	struct timespec64 ts;
@@ -304,8 +328,9 @@ static inline unsigned int cache_entry_hash(const void *data, int size)
 static inline bool is_sysvol_or_netlogon(const char *path)
 {
 	const char *s;
+	char sep = path[0];
 
-	s = strchr(path + 1, '\\') + 1;
+	s = strchr(path + 1, sep) + 1;
 	return !strncasecmp(s, "sysvol", strlen("sysvol")) ||
 		!strncasecmp(s, "netlogon", strlen("netlogon"));
 }
@@ -503,6 +528,7 @@ static struct dfs_cache_entry *find_cache_entry(const char *path,
 	const char *s, *q;
 	int len;
 	struct dfs_cache_entry *ce;
+	char sep = path[0];
 
 	len = strlen(path);
 
@@ -512,8 +538,8 @@ static struct dfs_cache_entry *find_cache_entry(const char *path,
 		return __find_cache_entry(*hash, path, len);
 	}
 
-	s = strchr(path + 1, '\\');
-	s = strchr(s + 1, '\\');
+	s = strchr(path + 1, sep);
+	s = strchr(s + 1, sep);
 	if (!s) {
 		*hash = cache_entry_hash(path, len);
 		return __find_cache_entry(*hash, path, len);
@@ -532,7 +558,7 @@ static struct dfs_cache_entry *find_cache_entry(const char *path,
 		ce = __find_cache_entry(*hash, path, len);
 		if (!IS_ERR(ce))
 			break;
-		while (*q-- != '\\');
+		while (*q-- != sep);
 	} while (q >= s);
 	return ce;
 }
@@ -850,17 +876,22 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		   struct dfs_cache_tgt_list *tgt_list, bool check_ppath)
 {
 	int rc;
+	char *npath;
 	struct dfs_cache_entry *ce;
 
-	if (!path || unlikely(!strchr(path + 1, '\\')))
+	if (unlikely(!is_path_valid(path)))
 		return -EINVAL;
 
+	rc = get_normalized_path(path, &npath);
+	if (rc)
+		return rc;
+
 	mutex_lock(&dfs_cache_list_lock);
-	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path,
+	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, npath,
 			       check_ppath, false);
 	if (!IS_ERR(ce)) {
 		if (ref)
-			rc = setup_ref(path, ce, ref, get_tgt_name(ce));
+			rc = setup_ref(npath, ce, ref, get_tgt_name(ce));
 		else
 			rc = 0;
 		if (!rc && tgt_list)
@@ -869,6 +900,7 @@ int dfs_cache_find(const unsigned int xid, struct cifs_ses *ses,
 		rc = PTR_ERR(ce);
 	}
 	mutex_unlock(&dfs_cache_list_lock);
+	free_normalized_path(path, npath);
 	return rc;
 }
 
@@ -892,28 +924,32 @@ int dfs_cache_noreq_find(const char *path, struct dfs_info3_param *ref,
 			 struct dfs_cache_tgt_list *tgt_list)
 {
 	int rc;
+	char *npath;
 	struct dfs_cache_entry *ce;
 
-	if (!path || unlikely(!strchr(path + 1, '\\')))
+	if (unlikely(!is_path_valid(path)))
 		return -EINVAL;
 
-	mutex_lock(&dfs_cache_list_lock);
+	rc = get_normalized_path(path, &npath);
+	if (rc)
+		return rc;
 
-	ce = do_dfs_cache_find(0, NULL, NULL, 0, path, true, true);
+	mutex_lock(&dfs_cache_list_lock);
+	ce = do_dfs_cache_find(0, NULL, NULL, 0, npath, true, true);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
 	}
 
 	if (ref)
-		rc = setup_ref(path, ce, ref, get_tgt_name(ce));
+		rc = setup_ref(npath, ce, ref, get_tgt_name(ce));
 	else
 		rc = 0;
 	if (!rc && tgt_list)
 		rc = get_tgt_list(ce, tgt_list);
-
 out:
 	mutex_unlock(&dfs_cache_list_lock);
+	free_normalized_path(path, npath);
 	return rc;
 }
 
@@ -941,19 +977,21 @@ int dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
 			     const struct dfs_cache_tgt_iterator *it)
 {
 	int rc;
+	char *npath;
 	struct dfs_cache_entry *ce;
 	struct dfs_cache_tgt *t;
 
-	if (!path || unlikely(!strchr(path + 1, '\\')))
-		return -EINVAL;
-	if (!it)
+	if (unlikely(!is_path_valid(path)))
 		return -EINVAL;
 
-	cifs_dbg(FYI, "%s: path: %s\n", __func__, path);
+	rc = get_normalized_path(path, &npath);
+	if (rc)
+		return rc;
+
+	cifs_dbg(FYI, "%s: path: %s\n", __func__, npath);
 
 	mutex_lock(&dfs_cache_list_lock);
-
-	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, path, true,
+	ce = do_dfs_cache_find(xid, ses, nls_codepage, remap, npath, true,
 			       false);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
@@ -978,6 +1016,7 @@ int dfs_cache_update_tgthint(const unsigned int xid, struct cifs_ses *ses,
 
 out:
 	mutex_unlock(&dfs_cache_list_lock);
+	free_normalized_path(path, npath);
 	return rc;
 }
 
@@ -999,19 +1038,22 @@ int dfs_cache_noreq_update_tgthint(const char *path,
 				   const struct dfs_cache_tgt_iterator *it)
 {
 	int rc;
+	char *npath;
 	struct dfs_cache_entry *ce;
 	struct dfs_cache_tgt *t;
 
-	if (!path || unlikely(!strchr(path + 1, '\\')))
-		return -EINVAL;
-	if (!it)
+	if (unlikely(!is_path_valid(path)) || !it)
 		return -EINVAL;
 
-	cifs_dbg(FYI, "%s: path: %s\n", __func__, path);
+	rc = get_normalized_path(path, &npath);
+	if (rc)
+		return rc;
+
+	cifs_dbg(FYI, "%s: path: %s\n", __func__, npath);
 
 	mutex_lock(&dfs_cache_list_lock);
 
-	ce = do_dfs_cache_find(0, NULL, NULL, 0, path, true, true);
+	ce = do_dfs_cache_find(0, NULL, NULL, 0, npath, true, true);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
@@ -1035,6 +1077,7 @@ int dfs_cache_noreq_update_tgthint(const char *path,
 
 out:
 	mutex_unlock(&dfs_cache_list_lock);
+	free_normalized_path(path, npath);
 	return rc;
 }
 
@@ -1053,19 +1096,24 @@ int dfs_cache_get_tgt_referral(const char *path,
 			       struct dfs_info3_param *ref)
 {
 	int rc;
+	char *npath;
 	struct dfs_cache_entry *ce;
 	unsigned int h;
 
 	if (!it || !ref)
 		return -EINVAL;
-	if (!path || unlikely(!strchr(path + 1, '\\')))
+	if (unlikely(!is_path_valid(path)))
 		return -EINVAL;
 
-	cifs_dbg(FYI, "%s: path: %s\n", __func__, path);
+	rc = get_normalized_path(path, &npath);
+	if (rc)
+		return rc;
+
+	cifs_dbg(FYI, "%s: path: %s\n", __func__, npath);
 
 	mutex_lock(&dfs_cache_list_lock);
 
-	ce = find_cache_entry(path, &h, true);
+	ce = find_cache_entry(npath, &h, true);
 	if (IS_ERR(ce)) {
 		rc = PTR_ERR(ce);
 		goto out;
@@ -1077,6 +1125,7 @@ int dfs_cache_get_tgt_referral(const char *path,
 
 out:
 	mutex_unlock(&dfs_cache_list_lock);
+	free_normalized_path(path, npath);
 	return rc;
 }
 
