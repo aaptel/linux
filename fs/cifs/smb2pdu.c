@@ -187,11 +187,17 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 	for (it = dfs_cache_get_tgt_iterator(&tl); it;
 	     it = dfs_cache_get_next_tgt(&tl, it)) {
 		const char *tgt = dfs_cache_get_tgt_name(it);
+
 		extract_unc_hostname(tgt, &dfs_host, &dfs_host_len);
 
 		if (dfs_host_len != tcp_host_len
-		    || strncmp(dfs_host, tcp_host, dfs_host_len) != 0)
+		    || strncasecmp(dfs_host, tcp_host, dfs_host_len) != 0) {
+			cifs_dbg(FYI, "%s: skipping %.*s, doesn't match %.*s",
+				 __func__,
+				 (int)dfs_host_len, dfs_host,
+				 (int)tcp_host_len, tcp_host);
 			continue;
+		}
 
 		snprintf(tree, sizeof(tree), "\\%s", tgt);
 
