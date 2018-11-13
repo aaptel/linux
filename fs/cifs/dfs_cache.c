@@ -1121,7 +1121,7 @@ int dfs_cache_get_tgt_referral(const char *path,
 
 	cifs_dbg(FYI, "%s: target name: %s\n", __func__, it->it_name);
 
-	rc = setup_ref(path, ce, ref, it->it_name);
+	rc = setup_ref(npath, ce, ref, it->it_name);
 
 out:
 	mutex_unlock(&dfs_cache_list_lock);
