@@ -203,14 +203,11 @@ static int __smb2_reconnect(const struct nls_table *nlsc,
 	}
 
 	if (!rc) {
-		if (it) {
+		if (it)
 			rc = dfs_cache_noreq_update_tgthint(tcon->dfs_path + 1,
 							    it);
-		} else {
+		else
 			rc = -ENOENT;
-		}
-		if (!rc)
-			tcon->need_refresh_dfscache = true;
 	}
 	dfs_cache_free_tgts(&tl);
 	return rc;

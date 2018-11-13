@@ -1018,8 +1018,7 @@ struct cifs_tcon {
 #ifdef CONFIG_CIFS_DFS_UPCALL
 	char *dfs_path;
 	int remap:2;
-	bool need_refresh_dfscache:1;
-	struct list_head ulist; /* update list */
+	struct list_head ulist; /* cache update list */
 #endif
 };
 
