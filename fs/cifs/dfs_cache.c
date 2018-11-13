@@ -535,7 +535,7 @@ static inline void destroy_slab_cache(void)
 	kmem_cache_destroy(dfs_cache_slab);
 }
 
-static void inline free_vol(struct dfs_cache_vol_info *vi)
+static inline void free_vol(struct dfs_cache_vol_info *vi)
 {
 	list_del(&vi->vi_list);
 	kfree(vi->vi_fullpath);

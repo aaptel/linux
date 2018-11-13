@@ -258,8 +258,8 @@ static struct vfsmount *cifs_dfs_do_refmount(struct dentry *mntpt,
 	char *devname;
 
 	/*
-	 * Always pass down the DFS full path to smb3_do_mount() so we can it
-	 * later for i.e. client target failover.
+	 * Always pass down the DFS full path to smb3_do_mount() so we
+	 * can use it later for failover.
 	 */
 	devname = kstrndup(fullpath, strlen(fullpath), GFP_KERNEL);
 	if (!devname)
@@ -299,12 +299,12 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	struct dfs_info3_param referral = {0};
 	struct cifs_sb_info *cifs_sb;
 	struct cifs_ses *ses;
-	char *full_path, *root_path, *c;
+	struct cifs_tcon *tcon;
+	char *full_path, *root_path;
 	unsigned int xid;
 	int len;
 	int rc;
 	struct vfsmount *mnt;
-	struct tcon_link *tlink;
 	char sep;
 
 	cifs_dbg(FYI, "in %s\n", __func__);
@@ -324,6 +324,8 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 		goto cdda_exit;
 	}
 
+	sep = CIFS_DIR_SEP(cifs_sb);
+
 	/* always use tree name prefix */
 	full_path = build_path_from_dentry_optional_prefix(mntpt, true);
 	if (full_path == NULL)
@@ -331,32 +333,25 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 
 	cifs_dbg(FYI, "%s: full_path: %s\n", __func__, full_path);
 
-	sep = CIFS_DIR_SEP(cifs_sb);
+	if (!cifs_sb_master_tlink(cifs_sb)) {
+		cifs_dbg(FYI, "%s: master tlink is NULL\n", __func__);
+		goto free_full_path;
+	}
 
-	root_path = kstrndup(full_path, strlen(full_path), GFP_KERNEL);
+	tcon = cifs_sb_master_tcon(cifs_sb);
+	if (!tcon) {
+		cifs_dbg(FYI, "%s: master tcon is NULL\n", __func__);
+		goto free_full_path;
+	}
+
+	root_path = kstrdup(tcon->treeName, GFP_KERNEL);
 	if (!root_path) {
 		mnt = ERR_PTR(-ENOMEM);
 		goto free_full_path;
 	}
-	c = strchr(root_path + 2, sep);
-	if (c) {
-		c = strchr(c + 1, sep);
-		if (!c) {
-			mnt = ERR_PTR(-EINVAL);
-			goto free_root_path;
-		}
-		*c = '\0';
-	}
-
 	cifs_dbg(FYI, "%s: root path: %s\n", __func__, root_path);
 
-	tlink = cifs_sb_tlink(cifs_sb);
-	if (IS_ERR(tlink)) {
-		mnt = ERR_CAST(tlink);
-		goto free_root_path;
-	}
-	ses = tlink_tcon(tlink)->ses;
-
+	ses = tcon->ses;
 	xid = get_xid();
 
 	/*
@@ -372,7 +367,6 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 	}
 
 	free_xid(xid);
-	cifs_put_tlink(tlink);
 
 	if (rc) {
 		mnt = ERR_PTR(rc);
@@ -389,8 +383,8 @@ static struct vfsmount *cifs_dfs_do_automount(struct dentry *mntpt)
 		goto free_dfs_ref;
 	}
 	/*
-	 * cifs_mount() will guarantee to retry every available node server in
-	 * case of failures.
+	 * cifs_mount() will retry every available node server in case
+	 * of failures.
 	 */
 	mnt = cifs_dfs_do_refmount(mntpt, cifs_sb, full_path, &referral);
 	cifs_dbg(FYI, "%s: cifs_dfs_do_refmount:%s , mnt:%p\n", __func__,

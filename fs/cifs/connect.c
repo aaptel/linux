@@ -62,8 +62,6 @@
 #include "dfs_cache.h"
 #endif
 
-#define __pl() do { cifs_dbg(FYI, "%s:%d here\n", __func__, __LINE__); } while (0)
-
 extern mempool_t *cifs_req_poolp;
 extern bool disable_legacy_dialects;
 
@@ -4133,7 +4131,7 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 	return rc;
 }
 
-static int inline get_next_dfs_tgt(const char *path,
+static inline int get_next_dfs_tgt(const char *path,
 				   struct dfs_cache_tgt_list *tgt_list,
 				   struct dfs_cache_tgt_iterator **tgt_it)
 {
@@ -4214,7 +4212,7 @@ static int setup_dfs_tgt_conn(const char *path,
 		rc = mount_get_conns(&fake_vol, cifs_sb, xid, server, ses, tcon);
 		if (!rc) {
 			/*
-			 * Were were able to connect to new target server.
+			 * We were able to connect to new target server.
 			 * Update current volume info with new target server.
 			 */
 			rc = update_vol_info(tgt_it, &fake_vol, vol);
@@ -4578,9 +4576,9 @@ int __cifs_dfs_mount(struct cifs_sb_info *cifs_sb, struct smb_vol *vol)
 		goto error;
 	}
 	/*
-	 * There isn't much we can do about validating unique IDs against the
-	 * new ones that we receiveid from server after failover That is, after
-	 * reconnecting to new target, the unique id will differ.
+	 * After reconnecting to a different server, unique ids won't
+	 * match anymore, so we disable serverino. This prevents
+	 * dentry revalidation to think the dentry are stale (ESTALE).
 	 */
 	cifs_autodisable_serverino(cifs_sb);
 out:

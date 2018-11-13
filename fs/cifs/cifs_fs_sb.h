@@ -79,7 +79,7 @@ struct cifs_sb_info {
 	/*
 	 * Path initially provided by the mount call. We might connect
 	 * to something different via DFS but we want to keep it to do
-	 * do failover properly.
+	 * failover properly.
 	 */
 	char *origin_fullpath; /* \\HOST\SHARE\[OPTIONAL PATH] */
 };
