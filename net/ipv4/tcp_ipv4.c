@@ -2056,6 +2056,7 @@ bool tcp_add_backlog(struct sock *sk, struct sk_buff *skb,
 	      TCP_SKB_CB(skb)->tcp_flags) & (TCPHDR_ECE | TCPHDR_CWR)) ||
 	    !mptcp_skb_can_collapse(tail, skb) ||
 	    skb_cmp_decrypted(tail, skb) ||
+	    skb_is_ulp_crc(tail) != skb_is_ulp_crc(skb) ||
 	    thtail->doff != th->doff ||
 	    memcmp(thtail + 1, th + 1, hdrlen - sizeof(*th)))
 		goto no_coalesce;

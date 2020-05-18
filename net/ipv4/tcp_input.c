@@ -4809,6 +4809,9 @@ static bool tcp_try_coalesce(struct sock *sk,
 	if (skb_cmp_decrypted(from, to))
 		return false;
 
+	if (skb_is_ulp_crc(from) != skb_is_ulp_crc(to))
+		return false;
+
 	if (!skb_try_coalesce(to, from, fragstolen, &delta))
 		return false;
 
@@ -5387,6 +5390,8 @@ restart:
 
 		memcpy(nskb->cb, skb->cb, sizeof(skb->cb));
 		skb_copy_decrypted(nskb, skb);
+		skb_copy_no_condense(nskb, skb);
+		skb_copy_ulp_crc(nskb, skb);
 		TCP_SKB_CB(nskb)->seq = TCP_SKB_CB(nskb)->end_seq = start;
 		if (list)
 			__skb_queue_before(list, skb, nskb);
@@ -5417,6 +5422,8 @@ restart:
 				    (TCP_SKB_CB(skb)->tcp_flags & (TCPHDR_SYN | TCPHDR_FIN)))
 					goto end;
 				if (skb_cmp_decrypted(skb, nskb))
+					goto end;
+				if (skb_is_ulp_crc(skb) != skb_is_ulp_crc(nskb))
 					goto end;
 			}
 		}
