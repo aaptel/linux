@@ -471,4 +471,14 @@ config NETDEV_ADDR_LIST_TEST
 	default KUNIT_ALL_TESTS
 	depends on KUNIT
 
+config ULP_DDP
+	bool "ULP direct data placement offload"
+	default n
+	help
+	  Direct Data Placement (DDP) offload enables ULP, such as
+	  NVMe-TCP, to request the NIC to place ULP payload data
+	  of a command response directly into kernel pages while
+	  calculate/verify the data digest on ULP PDU as they go through
+	  the NIC. Thus avoiding the costly per-byte overhead.
+
 endif   # if NET

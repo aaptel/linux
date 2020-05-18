@@ -1043,6 +1043,7 @@ struct dev_ifalias {
 
 struct devlink;
 struct tlsdev_ops;
+struct ulp_ddp_dev_ops;
 
 struct netdev_net_notifier {
 	struct list_head list;
@@ -2094,6 +2095,10 @@ struct net_device {
 
 #if IS_ENABLED(CONFIG_TLS_DEVICE)
 	const struct tlsdev_ops *tlsdev_ops;
+#endif
+
+#if IS_ENABLED(CONFIG_ULP_DDP)
+	const struct ulp_ddp_dev_ops *ulp_ddp_ops;
 #endif
 
 	const struct header_ops *header_ops;
