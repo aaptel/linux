@@ -266,6 +266,8 @@ struct sk_filter;
   *	@sk_sndbuf: size of send buffer in bytes
   *	@sk_no_check_tx: %SO_NO_CHECK setting, set checksum in TX packets
   *	@sk_no_check_rx: allow zero checksum in RX packets
+  *	@sk_no_condense: when set, skip condensing skbs from this sock (see
+  *			 skb_condense())
   *	@sk_route_caps: route capabilities (e.g. %NETIF_F_TSO)
   *	@sk_gso_disabled: if set, NETIF_F_GSO_MASK is forbidden.
   *	@sk_gso_type: GSO type (e.g. %SKB_GSO_TCPV4)
@@ -507,7 +509,8 @@ struct sock {
 	u8			sk_gso_disabled : 1,
 				sk_kern_sock : 1,
 				sk_no_check_tx : 1,
-				sk_no_check_rx : 1;
+				sk_no_check_rx : 1,
+				sk_no_condense : 1;
 	u8			sk_shutdown;
 	u16			sk_type;
 	u16			sk_protocol;
