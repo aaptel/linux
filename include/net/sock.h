@@ -507,7 +507,8 @@ struct sock {
 	u8			sk_gso_disabled : 1,
 				sk_kern_sock : 1,
 				sk_no_check_tx : 1,
-				sk_no_check_rx : 1;
+				sk_no_check_rx : 1,
+				sk_no_condense : 1;
 	u8			sk_shutdown;
 	u16			sk_type;
 	u16			sk_protocol;
