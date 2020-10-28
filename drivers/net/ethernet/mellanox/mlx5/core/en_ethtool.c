@@ -41,6 +41,7 @@
 #include "en/ptp.h"
 #include "lib/clock.h"
 #include "en/fs_ethtool.h"
+#include "en_accel/nvmeotcp.h"
 
 #define LANES_UNKNOWN		 0
 #define MAX_LANES		 8
@@ -2146,6 +2147,11 @@ int mlx5e_modify_rx_cqe_compression_locked(struct mlx5e_priv *priv, bool new_val
 
 	if (priv->channels.params.packet_merge.type == MLX5E_PACKET_MERGE_SHAMPO) {
 		netdev_warn(priv->netdev, "Can't set CQE compression with HW-GRO, disable it first.\n");
+		return -EINVAL;
+	}
+
+	if (priv->channels.params.nvmeotcp) {
+		netdev_warn(priv->netdev, "Can't set CQE compression after ULP DDP NVMe-TCP offload\n");
 		return -EINVAL;
 	}
 
