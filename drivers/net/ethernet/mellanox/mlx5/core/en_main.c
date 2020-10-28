@@ -48,6 +48,7 @@
 #include "en_accel/macsec.h"
 #include "en_accel/en_accel.h"
 #include "en_accel/ktls.h"
+#include "en_accel/nvmeotcp.h"
 #include "lib/vxlan.h"
 #include "lib/clock.h"
 #include "en/port.h"
@@ -4031,6 +4032,9 @@ int mlx5e_set_features(struct net_device *netdev, netdev_features_t features)
 	err |= MLX5E_HANDLE_FEATURE(NETIF_F_NTUPLE, set_feature_arfs);
 #endif
 	err |= MLX5E_HANDLE_FEATURE(NETIF_F_HW_TLS_RX, mlx5e_ktls_set_feature_rx);
+#ifdef CONFIG_MLX5_EN_NVMEOTCP
+	err |= MLX5E_HANDLE_FEATURE(NETIF_F_HW_ULP_DDP, set_feature_nvme_tcp);
+#endif
 
 	if (err) {
 		netdev->features = oper_features;
@@ -4125,6 +4129,21 @@ static netdev_features_t mlx5e_fix_features(struct net_device *netdev,
 		if (features & NETIF_F_GRO_HW) {
 			netdev_warn(netdev, "Disabling HW-GRO, not supported when CQE compress is active\n");
 			features &= ~NETIF_F_GRO_HW;
+		}
+
+		if (features & NETIF_F_HW_ULP_DDP) {
+			features &= ~NETIF_F_HW_ULP_DDP;
+			netdev_warn(netdev, "Disabling ulp-ddp offload, not supported when CQE compress is active\n");
+		}
+	}
+
+	if (features & (NETIF_F_LRO | NETIF_F_GRO_HW)) {
+		if (params->nvmeotcp) {
+			netdev_warn(netdev, "Disabling HW-GRO/LRO, not supported after ulp-ddp-offload\n");
+			features &= ~(NETIF_F_LRO | NETIF_F_GRO_HW);
+		} else if (features & NETIF_F_HW_ULP_DDP) {
+			netdev_warn(netdev, "Disabling ulp-ddp-offload, not supported with HW_GRO/LRO\n");
+			features &= ~NETIF_F_HW_ULP_DDP;
 		}
 	}
 
@@ -5163,6 +5182,7 @@ static void mlx5e_build_nic_netdev(struct net_device *netdev)
 	mlx5e_macsec_build_netdev(priv);
 	mlx5e_ipsec_build_netdev(priv);
 	mlx5e_ktls_build_netdev(priv);
+	mlx5e_nvmeotcp_build_netdev(priv);
 }
 
 void mlx5e_create_q_counters(struct mlx5e_priv *priv)
@@ -5232,13 +5252,19 @@ static int mlx5e_nic_init(struct mlx5_core_dev *mdev,
 	if (err)
 		mlx5_core_err(mdev, "TLS initialization failed, %d\n", err);
 
+	err = mlx5e_nvmeotcp_init(priv);
+	if (err)
+		mlx5_core_err(mdev, "NVMEoTCP initialization failed, %d\n", err);
+
 	mlx5e_health_create_reporters(priv);
+
 	return 0;
 }
 
 static void mlx5e_nic_cleanup(struct mlx5e_priv *priv)
 {
 	mlx5e_health_destroy_reporters(priv);
+	mlx5e_nvmeotcp_cleanup(priv);
 	mlx5e_ktls_cleanup(priv);
 	mlx5e_ipsec_cleanup(priv);
 	mlx5e_fs_cleanup(priv->fs);
