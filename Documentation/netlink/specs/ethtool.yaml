@@ -453,7 +453,7 @@ operations:
       notify: mm-get
     -
       name: ulp-ddp-get
-      doc: Get ULP DDP capabilities and stats
+      doc: Get ULP DDP capabilities and stats.
 
       attribute-set: ulp-ddp
 
@@ -472,7 +472,7 @@ operations:
       dump: *ulp-ddp-get-op
     -
       name: ulp-ddp-set
-      doc: Set ULP DDP capabilities
+      doc: Set ULP DDP capabilities.
 
       attribute-set: ulp-ddp
 
@@ -490,5 +490,5 @@ operations:
             - active
     -
       name: ulp-ddp-ntf
-      doc: Notification for change in ULP DDP capabilities
+      doc: Notification for change in ULP DDP capabilities.
       notify: ulp-ddp-get
