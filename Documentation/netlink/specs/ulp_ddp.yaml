@@ -26,7 +26,7 @@ attribute-sets:
     attributes:
       -
         name: ifindex
-        doc: interface index of the net device.
+        doc: Interface index of the net device.
         type: u32
       -
         name: rx-nvme-tcp-sk-add
@@ -75,31 +75,31 @@ attribute-sets:
     attributes:
       -
         name: ifindex
-        doc: interface index of the net device.
+        doc: Interface index of the net device.
         type: u32
       -
         name: hw
-        doc: bitmask of the capabilities supported by the device.
+        doc: Bitmask of the capabilities supported by the device.
         type: uint
         enum: cap
         enum-as-flags: true
       -
         name: active
-        doc: bitmask of the capabilities currently enabled on the device.
+        doc: Bitmask of the capabilities currently enabled on the device.
         type: uint
         enum: cap
         enum-as-flags: true
       -
         name: wanted
         doc: >
-          new active bit values of the capabilities we want to set on the
+          New active bit values of the capabilities we want to set on the
           device.
         type: uint
         enum: cap
         enum-as-flags: true
       -
         name: wanted_mask
-        doc: bitmask of the meaningful bits in the wanted field.
+        doc: Bitmask of the meaningful bits in the wanted field.
         type: uint
         enum: cap
         enum-as-flags: true
