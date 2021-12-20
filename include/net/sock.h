@@ -2962,6 +2962,29 @@ int sock_get_timeout(long timeo, void *optval, bool old_timeval);
 int sock_copy_user_timeval(struct __kernel_sock_timeval *tv,
 			   sockptr_t optval, int optlen, bool old_timeval);
 
+/**
+ * get_netdev_for_sock() - get net_device from a connected socket.
+ * @sk:	Connected socket.
+ *
+ * get_netdev_for_sock() is a utility that is used to obtain the net_device
+ * structure from a connected socket. This function assumes that the socket
+ * is already connected. This function is used by TLS and ULP DDP offloads.
+ */
+static inline struct net_device *get_netdev_for_sock(struct sock *sk)
+{
+	struct dst_entry *dst = sk_dst_get(sk);
+	struct net_device *netdev = NULL;
+
+	if (likely(dst)) {
+		netdev = netdev_sk_get_lowest_dev(dst->dev, sk);
+		dev_hold(netdev);
+	}
+
+	dst_release(dst);
+
+	return netdev;
+}
+
 static inline bool sk_is_readable(struct sock *sk)
 {
 	if (sk->sk_prot->sock_is_readable)
