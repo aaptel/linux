@@ -36,6 +36,7 @@
 #include "en_accel/en_accel.h"
 #include "en/ptp.h"
 #include "en/port.h"
+#include "en_accel/nvmeotcp.h"
 
 #ifdef CONFIG_PAGE_POOL_STATS
 #include <net/page_pool.h>
@@ -211,6 +212,12 @@ static const struct counter_desc sw_stats_desc[] = {
 	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, rx_tls_resync_res_retry) },
 	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, rx_tls_resync_res_skip) },
 	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, rx_tls_err) },
+#endif
+#ifdef CONFIG_MLX5_EN_NVMEOTCP
+	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, rx_nvmeotcp_drop) },
+	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, rx_nvmeotcp_resync) },
+	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, rx_nvmeotcp_offload_packets) },
+	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, rx_nvmeotcp_offload_bytes) },
 #endif
 	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, ch_events) },
 	{ MLX5E_DECLARE_STAT(struct mlx5e_sw_stats, ch_poll) },
@@ -390,6 +397,12 @@ static void mlx5e_stats_grp_sw_update_stats_rq_stats(struct mlx5e_sw_stats *s,
 	s->rx_tls_resync_res_retry    += rq_stats->tls_resync_res_retry;
 	s->rx_tls_resync_res_skip     += rq_stats->tls_resync_res_skip;
 	s->rx_tls_err                 += rq_stats->tls_err;
+#endif
+#ifdef CONFIG_MLX5_EN_NVMEOTCP
+	s->rx_nvmeotcp_drop		+= rq_stats->nvmeotcp_drop;
+	s->rx_nvmeotcp_resync		+= rq_stats->nvmeotcp_resync;
+	s->rx_nvmeotcp_offload_packets	+= rq_stats->nvmeotcp_offload_packets;
+	s->rx_nvmeotcp_offload_bytes	+= rq_stats->nvmeotcp_offload_bytes;
 #endif
 }
 
@@ -1934,6 +1947,23 @@ static MLX5E_DECLARE_STATS_GRP_OP_FILL_STATS(tls)
 
 static MLX5E_DECLARE_STATS_GRP_OP_UPDATE_STATS(tls) { return; }
 
+static MLX5E_DECLARE_STATS_GRP_OP_NUM_STATS(nvmeotcp)
+{
+	return mlx5e_nvmeotcp_get_count(priv);
+}
+
+static MLX5E_DECLARE_STATS_GRP_OP_FILL_STRS(nvmeotcp)
+{
+	return idx + mlx5e_nvmeotcp_get_strings(priv, data + idx * ETH_GSTRING_LEN);
+}
+
+static MLX5E_DECLARE_STATS_GRP_OP_FILL_STATS(nvmeotcp)
+{
+	return idx + mlx5e_nvmeotcp_get_stats(priv, data + idx);
+}
+
+static MLX5E_DECLARE_STATS_GRP_OP_UPDATE_STATS(nvmeotcp) { return; }
+
 static const struct counter_desc rq_stats_desc[] = {
 	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, packets) },
 	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, bytes) },
@@ -1993,6 +2023,12 @@ static const struct counter_desc rq_stats_desc[] = {
 	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, tls_resync_res_retry) },
 	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, tls_resync_res_skip) },
 	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, tls_err) },
+#endif
+#ifdef CONFIG_MLX5_EN_NVMEOTCP
+	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, nvmeotcp_drop) },
+	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, nvmeotcp_resync) },
+	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, nvmeotcp_offload_packets) },
+	{ MLX5E_DECLARE_RX_STAT(struct mlx5e_rq_stats, nvmeotcp_offload_bytes) },
 #endif
 };
 
@@ -2445,6 +2481,7 @@ MLX5E_DEFINE_STATS_GRP(channels, 0);
 MLX5E_DEFINE_STATS_GRP(per_port_buff_congest, 0);
 MLX5E_DEFINE_STATS_GRP(eth_ext, 0);
 static MLX5E_DEFINE_STATS_GRP(tls, 0);
+static MLX5E_DEFINE_STATS_GRP(nvmeotcp, 0);
 MLX5E_DEFINE_STATS_GRP(ptp, 0);
 static MLX5E_DEFINE_STATS_GRP(qos, 0);
 
@@ -2466,6 +2503,7 @@ mlx5e_stats_grp_t mlx5e_nic_stats_grps[] = {
 	&MLX5E_STATS_GRP(ipsec_sw),
 #endif
 	&MLX5E_STATS_GRP(tls),
+	&MLX5E_STATS_GRP(nvmeotcp),
 	&MLX5E_STATS_GRP(channels),
 	&MLX5E_STATS_GRP(per_port_buff_congest),
 	&MLX5E_STATS_GRP(ptp),
