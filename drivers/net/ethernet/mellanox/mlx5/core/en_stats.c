@@ -2497,3 +2497,20 @@ unsigned int mlx5e_nic_stats_grps_num(struct mlx5e_priv *priv)
 {
 	return ARRAY_SIZE(mlx5e_nic_stats_grps);
 }
+
+/* ULP DDP stats */
+
+unsigned int mlx5e_stats_ulp_ddp_total_num(struct mlx5e_priv *priv)
+{
+	return mlx5e_nvmeotcp_get_count(priv);
+}
+
+void mlx5e_stats_ulp_ddp_fill_strings(struct mlx5e_priv *priv, u8 *data)
+{
+	mlx5e_nvmeotcp_get_strings(priv, data);
+}
+
+void mlx5e_stats_ulp_ddp_get(struct mlx5e_priv *priv, u64 *stats)
+{
+	mlx5e_nvmeotcp_get_stats(priv, stats);
+}

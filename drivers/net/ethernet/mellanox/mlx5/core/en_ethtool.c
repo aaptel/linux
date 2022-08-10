@@ -246,6 +246,8 @@ int mlx5e_ethtool_get_sset_count(struct mlx5e_priv *priv, int sset)
 		return MLX5E_NUM_PFLAGS;
 	case ETH_SS_TEST:
 		return mlx5e_self_test_num(priv);
+	case ETH_SS_ULP_DDP_STATS:
+		return mlx5e_stats_ulp_ddp_total_num(priv);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -275,6 +277,10 @@ void mlx5e_ethtool_get_strings(struct mlx5e_priv *priv, u32 stringset, u8 *data)
 
 	case ETH_SS_STATS:
 		mlx5e_stats_fill_strings(priv, data);
+		break;
+
+	case ETH_SS_ULP_DDP_STATS:
+		mlx5e_stats_ulp_ddp_fill_strings(priv, data);
 		break;
 	}
 }
@@ -2400,6 +2406,16 @@ static void mlx5e_get_rmon_stats(struct net_device *netdev,
 }
 
 #ifdef CONFIG_MLX5_EN_NVMEOTCP
+static int mlx5e_get_ulp_ddp_stats(struct net_device *netdev,
+				   u64 *stats)
+{
+	struct mlx5e_priv *priv = netdev_priv(netdev);
+
+	mlx5e_stats_ulp_ddp_get(priv, stats);
+
+	return 0;
+}
+
 static int mlx5e_set_ulp_ddp_capabilities(struct net_device *netdev, unsigned long *new_caps)
 {
 	struct mlx5e_priv *priv = netdev_priv(netdev);
@@ -2501,6 +2517,7 @@ const struct ethtool_ops mlx5e_ethtool_ops = {
 	.get_rmon_stats    = mlx5e_get_rmon_stats,
 	.get_link_ext_stats = mlx5e_get_link_ext_stats,
 #ifdef CONFIG_MLX5_EN_NVMEOTCP
+	.get_ulp_ddp_stats = mlx5e_get_ulp_ddp_stats,
 	.set_ulp_ddp_capabilities = mlx5e_set_ulp_ddp_capabilities,
 #endif
 };
