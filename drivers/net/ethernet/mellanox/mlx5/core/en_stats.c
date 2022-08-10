@@ -2497,3 +2497,10 @@ unsigned int mlx5e_nic_stats_grps_num(struct mlx5e_priv *priv)
 {
 	return ARRAY_SIZE(mlx5e_nic_stats_grps);
 }
+
+/* ULP DDP stats */
+
+void mlx5e_stats_ulp_ddp_get(struct mlx5e_priv *priv, struct ethtool_ulp_ddp_stats *stats)
+{
+	mlx5e_nvmeotcp_get_stats(priv, stats);
+}
