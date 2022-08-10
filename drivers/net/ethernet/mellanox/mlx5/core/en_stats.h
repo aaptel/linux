@@ -132,6 +132,9 @@ void mlx5e_stats_ts_get(struct mlx5e_priv *priv,
 			struct ethtool_ts_stats *ts_stats);
 void mlx5e_get_link_ext_stats(struct net_device *dev,
 			      struct ethtool_link_ext_stats *stats);
+struct ulp_ddp_stats;
+void mlx5e_stats_ulp_ddp_get(struct mlx5e_priv *priv,
+			     struct ulp_ddp_stats *stats);
 
 /* Concrete NIC Stats */
 
@@ -405,6 +408,12 @@ struct mlx5e_rq_stats {
 	u64 tls_resync_res_retry;
 	u64 tls_resync_res_skip;
 	u64 tls_err;
+#endif
+#ifdef CONFIG_MLX5_EN_NVMEOTCP
+	u64 nvmeotcp_drop;
+	u64 nvmeotcp_resync;
+	u64 nvmeotcp_packets;
+	u64 nvmeotcp_bytes;
 #endif
 };
 
