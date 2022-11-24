@@ -692,6 +692,10 @@ enum {
  *	plugged-in.
  * @set_module_power_mode: Set the power mode policy for the plug-in module
  *	used by the network device.
+ * @get_ulp_ddp_stats: Query ULP DDP statistics. Return the number of
+ *	counters or -1 or error.
+ * @set_ulp_ddp_capabilities: Set device ULP DDP capabilities.
+ *	Returns a negative error code or zero.
  *
  * All operations are optional (i.e. the function pointer may be set
  * to %NULL) and callers must take this into account.  Callers must
@@ -830,6 +834,8 @@ struct ethtool_ops {
 	int	(*set_module_power_mode)(struct net_device *dev,
 					 const struct ethtool_module_power_mode_params *params,
 					 struct netlink_ext_ack *extack);
+	int	(*get_ulp_ddp_stats)(struct net_device *dev, struct ethtool_ulp_ddp_stats *stats);
+	int	(*set_ulp_ddp_capabilities)(struct net_device *dev, unsigned long *bits);
 };
 
 int ethtool_check_ops(const struct ethtool_ops *ops);
