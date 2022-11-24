@@ -2,6 +2,7 @@
 
 #include <linux/ethtool.h>
 #include <linux/phy.h>
+#include <net/ulp_ddp_caps.h>
 #include "netlink.h"
 #include "common.h"
 
@@ -104,6 +105,14 @@ static const struct strset_info info_template[] = {
 		.per_dev	= false,
 		.count		= __ETHTOOL_A_STATS_RMON_CNT,
 		.strings	= stats_rmon_names,
+	},
+	[ETH_SS_ULP_DDP] = {
+		.per_dev	= false,
+		.count		= ULP_DDP_C_COUNT,
+		.strings	= ulp_ddp_names,
+	},
+	[ETH_SS_ULP_DDP_STATS] = {
+		.per_dev	= true,
 	},
 };
 
