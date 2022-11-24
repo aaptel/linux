@@ -478,6 +478,49 @@ struct ethtool_module_power_mode_params {
 };
 
 /**
+ * struct ethtool_ulp_ddp_stats - ULP DDP offload statistics
+ * @rx_nvmeotcp_sk_add: number of sockets successfully prepared for offloading.
+ * @rx_nvmeotcp_sk_add_fail: number of sockets that failed to be prepared for offloading.
+ * @rx_nvmeotcp_sk_del: number of sockets where offloading has been removed.
+ * @rx_nvmeotcp_ddp_setup: number of NVMeTCP PDU successfully prepared for Direct Data Placement.
+ * @rx_nvmeotcp_ddp_setup_fail: number of PDUs that failed DDP preparation.
+ * @rx_nvmeotcp_ddp_teardown: number of PDUs done with DDP.
+ * @rx_nvmeotcp_drop: number of PDUs dropped.
+ * @rx_nvmeotcp_resync: number of resync.
+ * @rx_nvmeotcp_packets: number of offloaded PDUs.
+ * @rx_nvmeotcp_bytes: number of offloaded bytes.
+ */
+struct ethtool_ulp_ddp_stats {
+	u64 rx_nvmeotcp_sk_add;
+	u64 rx_nvmeotcp_sk_add_fail;
+	u64 rx_nvmeotcp_sk_del;
+	u64 rx_nvmeotcp_ddp_setup;
+	u64 rx_nvmeotcp_ddp_setup_fail;
+	u64 rx_nvmeotcp_ddp_teardown;
+	u64 rx_nvmeotcp_drop;
+	u64 rx_nvmeotcp_resync;
+	u64 rx_nvmeotcp_packets;
+	u64 rx_nvmeotcp_bytes;
+
+	/* Remember to update the enum below when changing this struct */
+};
+
+enum {
+	ETH_ULP_DDP_RX_NVMEOTCP_SK_ADD,
+	ETH_ULP_DDP_RX_NVMEOTCP_SK_ADD_FAIL,
+	ETH_ULP_DDP_RX_NVMEOTCP_SK_DEL,
+	ETH_ULP_DDP_RX_NVMEOTCP_DDP_SETUP,
+	ETH_ULP_DDP_RX_NVMEOTCP_DDP_SETUP_FAIL,
+	ETH_ULP_DDP_RX_NVMEOTCP_DDP_TEARDOWN,
+	ETH_ULP_DDP_RX_NVMEOTCP_DROP,
+	ETH_ULP_DDP_RX_NVMEOTCP_RESYNC,
+	ETH_ULP_DDP_RX_NVMEOTCP_PACKETS,
+	ETH_ULP_DDP_RX_NVMEOTCP_BYTES,
+
+	__ETH_ULP_DDP_STATS_CNT,
+};
+
+/**
  * struct ethtool_ops - optional netdev operations
  * @cap_link_lanes_supported: indicates if the driver supports lanes
  *	parameter.
