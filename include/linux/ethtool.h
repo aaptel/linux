@@ -777,6 +777,8 @@ struct ethtool_ops {
 	int	(*set_module_power_mode)(struct net_device *dev,
 					 const struct ethtool_module_power_mode_params *params,
 					 struct netlink_ext_ack *extack);
+	int	(*get_ulp_ddp_stats)(struct net_device *dev, u64 *ulp_ddp_stats);
+	int	(*set_ulp_ddp_capabilities)(struct net_device *dev, unsigned long *bits);
 };
 
 int ethtool_check_ops(const struct ethtool_ops *ops);
