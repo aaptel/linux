@@ -5,6 +5,7 @@
 #include <linux/phy.h>
 #include <linux/rtnetlink.h>
 #include <linux/ptp_clock_kernel.h>
+#include <net/ulp_ddp_caps.h>
 
 #include "common.h"
 
@@ -464,6 +465,28 @@ const char udp_tunnel_type_names[][ETH_GSTRING_LEN] = {
 };
 static_assert(ARRAY_SIZE(udp_tunnel_type_names) ==
 	      __ETHTOOL_UDP_TUNNEL_TYPE_CNT);
+
+const char ulp_ddp_caps_names[][ETH_GSTRING_LEN] = {
+	[ULP_DDP_C_NVME_TCP_BIT]		= "nvme-tcp-ddp",
+	[ULP_DDP_C_NVME_TCP_DDGST_RX_BIT]	= "nvme-tcp-ddgst-rx-offload",
+};
+static_assert(ARRAY_SIZE(ulp_ddp_caps_names) == ULP_DDP_C_COUNT);
+
+const char ulp_ddp_stats_names[][ETH_GSTRING_LEN] = {
+	[ETHTOOL_A_ULP_DDP_STATS_UNSPEC]			= "unspec",
+	[ETHTOOL_A_ULP_DDP_STATS_PAD]				= "pad",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_SK_ADD]		= "rx_nvmeotcp_sk_add",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_SK_ADD_FAIL]	= "rx_nvmeotcp_sk_add_fail",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_SK_DEL]		= "rx_nvmeotcp_sk_del",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_DDP_SETUP]		= "rx_nvmeotcp_ddp_setup",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_DDP_SETUP_FAIL]	= "rx_nvmeotcp_ddp_setup_fail",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_DDP_TEARDOWN]	= "rx_nvmeotcp_ddp_teardown",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_DROP]		= "rx_nvmeotcp_drop",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_RESYNC]		= "rx_nvmeotcp_resync",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_PACKETS]		= "rx_nvmeotcp_packets",
+	[ETHTOOL_A_ULP_DDP_STATS_RX_NVMEOTCP_BYTES]		= "rx_nvmeotcp_bytes",
+};
+static_assert(ARRAY_SIZE(ulp_ddp_stats_names) == __ETHTOOL_A_ULP_DDP_STATS_CNT);
 
 /* return false if legacy contained non-0 deprecated fields
  * maxtxpkt/maxrxpkt. rest of ksettings always updated
