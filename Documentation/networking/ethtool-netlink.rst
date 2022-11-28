@@ -223,6 +223,8 @@ Userspace to kernel:
   ``ETHTOOL_MSG_PSE_SET``               set PSE parameters
   ``ETHTOOL_MSG_PSE_GET``               get PSE parameters
   ``ETHTOOL_MSG_RSS_GET``               get RSS settings
+  ``ETHTOOL_MSG_ULP_DDP_GET``           get ULP DDP capabilities and stats
+  ``ETHTOOL_MSG_ULP_DDP_SET``           set ULP DDP capabilities
   ===================================== =================================
 
 Kernel to userspace:
@@ -265,6 +267,8 @@ Kernel to userspace:
   ``ETHTOOL_MSG_MODULE_GET_REPLY``         transceiver module parameters
   ``ETHTOOL_MSG_PSE_GET_REPLY``            PSE parameters
   ``ETHTOOL_MSG_RSS_GET_REPLY``            RSS settings
+  ``ETHTOOL_MSG_ULP_DDP_GET_REPLY``        ULP DDP capabilities and stats
+  ``ETHTOOL_MSG_ULP_DDP_SET_REPLY``        optional reply to ULP_DDP_SET
   ======================================== =================================
 
 ``GET`` requests are sent by userspace applications to retrieve device
@@ -1715,6 +1719,108 @@ ETHTOOL_A_RSS_HFUNC attribute is bitmap indicating the hash function
 being used. Current supported options are toeplitz, xor or crc32.
 ETHTOOL_A_RSS_INDIR attribute returns RSS indrection table where each byte
 indicates queue number.
+
+ULP_DDP_GET
+===========
+
+Get ULP DDP capabilities for the interface and optional driver-defined stats.
+
+Request contents:
+
+  ====================================  ======  ==========================
+  ``ETHTOOL_A_ULP_DDP_HEADER``          nested  request header
+  ====================================  ======  ==========================
+
+Kernel response contents:
+
+  ====================================  ======  ==========================
+  ``ETHTOOL_A_ULP_DDP_HEADER``          nested  reply header
+  ``ETHTOOL_A_ULP_DDP_HW``              bitset  dev->ulp_ddp_caps.hw
+  ``ETHTOOL_A_ULP_DDP_ACTIVE``          bitset  dev->ulp_ddp_caps.active
+  ``ETHTOOL_A_ULP_DDP_STATS``           nested  ULP DDP statistics
+  ====================================  ======  ==========================
+
+
+* If ``ETHTOOL_FLAG_COMPACT_BITSETS`` was set in
+  ``ETHTOOL_A_HEADER_FLAG``, the bitsets of the reply are in compact
+  form. In that form, the names for the individual bits can be retried
+  via the ``ETH_SS_ULP_DDP`` string set.
+* ``ETHTOOL_A_ULP_DDP_STATS`` contains driver-defined statistics which
+  are only reported if ``ETHTOOL_FLAG_STATS`` was set in
+  ``ETHTOOL_A_HEADER_FLAGS``.
+
+Similar to the bitsets, statistics can be reported in a verbose or
+compact form. This is controlled by the same header flag
+``ETHTOOL_FLAG_STATS``).
+
+Verbose statistics contents:
+
+ +-----------------------------------------------+--------+---------------------------------+
+ | ``ETHTOOL_A_ULP_DDP_STATS_COUNT``             | u32    | number of statistics            |
+ +-----------------------------------------------+--------+---------------------------------+
+ | ``ETHTOOL_A_ULP_DDP_STATS_MAP``               | nested | nest containing a list of stats |
+ +-+---------------------------------------------+--------+---------------------------------+
+ | | ``ETHTOOL_A_ULP_DDP_STATS_MAP_ITEM``        | nested | nest containing one statistic   |
+ +-+-+-------------------------------------------+--------+---------------------------------+
+ | | | ``ETHTOOL_A_ULP_DDP_STATS_MAP_ITEM_NAME`` | string | statistic name                  |
+ +-+-+-------------------------------------------+--------+---------------------------------+
+ | | | ``ETHTOOL_A_ULP_DDP_STATS_MAP_ITEM_NAME`` | u64    | statistic value                 |
+ +-+-+-------------------------------------------+--------+---------------------------------+
+
+Compact statistics content:
+
+ +-----------------------------------------------+--------+-----------------------+
+ | ``ETHTOOL_A_ULP_DDP_STATS_COUNT``             | u32    | number of statistics  |
+ +-----------------------------------------------+--------+-----------------------+
+ | ``ETHTOOL_A_ULP_DDP_STATS_COMPACT_VALUES``    | u64[]  | stats values          |
+ +-----------------------------------------------+--------+-----------------------+
+
+In compact form, ``ETHTOOL_A_ULP_DDP_STATS_COMPACT_VALUES`` contains
+an array of unsigned 64 bits integer of *count* elements, as a binary
+blob.
+
+The names of each statistics are not global but per-device. They can
+be retried via the ``ETH_SS_ULP_DDP_STATS`` string set.
+
+ULP_DDP_SET
+===========
+
+Request to set ULP DDP capabilities for the interface.
+
+Request contents:
+
+  ====================================  ======  ==========================
+  ``ETHTOOL_A_ULP_DDP_HEADER``          nested  request header
+  ``ETHTOOL_A_ULP_DDP_WANTED``          bitset  requested capabilities
+  ====================================  ======  ==========================
+
+Kernel response contents:
+
+  ====================================  ======  ==========================
+  ``ETHTOOL_A_ULP_DDP_HEADER``          nested  reply header
+  ``ETHTOOL_A_ULP_DDP_WANTED``          bitset  diff wanted vs. results
+  ``ETHTOOL_A_ULP_DDP_ACTIVE``          bitset  diff old vs. new active
+  ====================================  ======  ==========================
+
+Request contains only one bitset which can be either value/mask pair
+(request to change specific capabilities and leave the rest) or only a
+value (request to set the complete capabilities provided literally).
+
+Requests are subject to sanity checks by drivers so an optional kernel
+reply (can be suppressed by ``ETHTOOL_FLAG_OMIT_REPLY`` flag in
+request header) informs client about the actual
+results.
+
+* ``ETHTOOL_A_ULP_DDP_WANTED`` reports the difference between client
+  request and actual result: mask consists of bits which differ between
+  requested capability and result (dev->ulp_ddp_caps.active after the
+  operation), value consists of values of these bits in the request
+  (i.e. negated values from resulting capabilities).
+* ``ETHTOOL_A_ULP_DDP_ACTIVE`` reports the difference between old and
+  new dev->ulp_ddp_caps.active: mask consists of bits which have
+  changed, values are their values in new dev->ulp_ddp_caps.active
+  (after the operation).
+
 
 Request translation
 ===================
