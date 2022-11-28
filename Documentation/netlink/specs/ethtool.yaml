@@ -236,6 +236,67 @@ attribute-sets:
         name: stats
         type: nest
         nested-attributes: mm-stat
+  -
+    name: ulp-ddp-stat
+    attributes:
+      -
+        name: pad
+        value: 1
+        type: pad
+      -
+        name: rx-nvmeotcp-sk-add
+        type: u64
+      -
+        name: rx-nvmeotcp-sk-add-fail
+        type: u64
+      -
+        name: rx-nvmeotcp-sk-del
+        type: u64
+      -
+        name: rx-nvmeotcp-ddp-setup
+        type: u64
+      -
+        name: rx-nvmeotcp-ddp-setup-fail
+        type: u64
+      -
+        name: rx-nvmeotcp-ddp-teardown
+        type: u64
+      -
+        name: rx-nvmeotcp-ddp-drop
+        type: u64
+      -
+        name: rx-nvmeotcp-ddp-resync
+        type: u64
+      -
+        name: rx-nvmeotcp-ddp-packets
+        type: u64
+      -
+        name: rx-nvmeotcp-ddp-bytes
+        type: u64
+  -
+    name: ulp-ddp
+    attributes:
+      -
+        name: header
+        value: 1
+        type: nest
+        nested-attributes: header
+      -
+        name: hw
+        type: nest
+        nested-attributes: bitset
+      -
+        name: active
+        type: nest
+        nested-attributes: bitset
+      -
+        name: wanted
+        type: nest
+        nested-attributes: bitset
+      -
+        name: stats
+        type: nest
+        nested-attributes: ulp-ddp-stat
 
 operations:
   enum-model: directional
@@ -390,3 +451,44 @@ operations:
       name: mm-ntf
       doc: Notification for change in MAC Merge configuration.
       notify: mm-get
+    -
+      name: ulp-ddp-get
+      doc: Get ULP DDP capabilities and stats
+
+      attribute-set: ulp-ddp
+
+      do: &ulp-ddp-get-op
+        request:
+          value: 44
+          attributes:
+            - header
+        reply:
+          value: 44
+          attributes:
+            - header
+            - hw
+            - active
+            - stats
+      dump: *ulp-ddp-get-op
+    -
+      name: ulp-ddp-set
+      doc: Set ULP DDP capabilities
+
+      attribute-set: ulp-ddp
+
+      do:
+        request:
+          value: 45
+          attributes:
+            - header
+            - wanted
+        reply:
+          value: 45
+          attributes:
+            - header
+            - hw
+            - active
+    -
+      name: ulp-ddp-ntf
+      doc: Notification for change in ULP DDP capabilities
+      notify: ulp-ddp-get
