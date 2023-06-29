@@ -367,6 +367,10 @@ static inline bool is_netdev_ulp_offload_active(struct net_device *netdev,
 	if (!nvme_tcp_ddp_query_limits(netdev, queue))
 		return false;
 
+	/* If we are using TLS and netdev doesn't support it, do not offload */
+	if (queue->ctrl->ctrl.opts->tls && !queue->ddp_limits.tls)
+		return false;
+
 	/* If netdev supports nvme-tcp ddp offload, we can offload */
 	if (test_bit(ULP_DDP_C_NVME_TCP_BIT, netdev->ulp_ddp_caps.active))
 		return true;
