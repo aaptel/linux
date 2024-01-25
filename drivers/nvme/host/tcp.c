@@ -28,6 +28,43 @@
 #include "nvme.h"
 #include "fabrics.h"
 
+static atomic_t g_total, g_rx_cpu[256], g_tx_cpu[256];
+static void debug_cpu_write_stats(atomic_t *stats, size_t nbcpu, char *buf, size_t len)
+{
+	unsigned written = 0;
+	int remaining = len-1;
+	int i;
+
+	buf[len-1] = 0;
+	for (i = 0; i < num_online_cpus() && i < nbcpu; i++) {
+		unsigned v = atomic_read(&stats[i]);
+
+		if (v > 0) {
+			int r = snprintf(buf + written, remaining, "cpu%d=%u ", i, v);
+			if (r < 0 || r >= remaining) {
+				printk("XXX buf too small\n");
+				return;
+			}
+			written += r;
+			remaining -= r;
+		}
+	}
+	buf[len-1] = 0;
+}
+static void debug_cpu(void)
+{
+	unsigned count = atomic_inc_return(&g_total);
+	if (count % 16000 == 0) {
+		char buf[512];
+
+		debug_cpu_write_stats(g_rx_cpu, ARRAY_SIZE(g_rx_cpu), buf, sizeof(buf));
+		printk("XXX stats RX cpu: %s\n", buf);
+
+		debug_cpu_write_stats(g_tx_cpu, ARRAY_SIZE(g_tx_cpu), buf, sizeof(buf));
+		printk("XXX stats TX cpu: %s\n", buf);
+	}
+}
+
 struct nvme_tcp_queue;
 
 /* Define the socket priority to use for connections were it is desirable
@@ -1297,6 +1334,8 @@ static int nvme_tcp_recv_skb(read_descriptor_t *desc, struct sk_buff *skb,
 	if (unlikely(!queue->rd_enabled))
 		return -EFAULT;
 
+	atomic_inc(&g_rx_cpu[raw_smp_processor_id()]);
+	debug_cpu();
 	while (len) {
 		switch (nvme_tcp_recv_state(queue)) {
 		case NVME_TCP_RECV_PDU:
@@ -1579,6 +1618,8 @@ static int nvme_tcp_try_send(struct nvme_tcp_queue *queue)
 			return 0;
 	}
 	req = queue->request;
+	atomic_inc(&g_tx_cpu[raw_smp_processor_id()]);
+	debug_cpu();
 
 	noreclaim_flag = memalloc_noreclaim_save();
 	if (req->state == NVME_TCP_SEND_CMD_PDU) {

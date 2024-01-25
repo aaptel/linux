@@ -20,16 +20,23 @@ void blk_mq_map_queues(struct blk_mq_queue_map *qmap)
 	const struct cpumask *masks;
 	unsigned int queue, cpu;
 
+	printk("XXX blk_mq_map_queues\n");
+	
 	masks = group_cpus_evenly(qmap->nr_queues);
 	if (!masks) {
-		for_each_possible_cpu(cpu)
+		for_each_possible_cpu(cpu) {
+			printk("XXX blk_mq_map_queues map[cpu=%2d] = queue_offset=0x%x %d\n", cpu, qmap->queue_offset, qmap->queue_offset);
 			qmap->mq_map[cpu] = qmap->queue_offset;
+		}
 		return;
 	}
 
 	for (queue = 0; queue < qmap->nr_queues; queue++) {
-		for_each_cpu(cpu, &masks[queue])
+		for_each_cpu(cpu, &masks[queue]) {
+			printk("XXX blk_mq_map_queues map[cpu=%2d] = queue_offset=0x%x %d + queue %d\n", cpu, qmap->queue_offset, qmap->queue_offset, queue);
 			qmap->mq_map[cpu] = qmap->queue_offset + queue;
+		}
+		printk("XXX ---\n");
 	}
 	kfree(masks);
 }
