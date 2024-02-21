@@ -10,9 +10,76 @@
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/cpu.h>
+#include <linux/group_cpus.h>
+
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#include <linux/uaccess.h>
 
 #include "blk.h"
 #include "blk-mq.h"
+
+enum map_mode {
+	MAP_ROUND_ROBIN,
+	MAP_NUMA_GROUP,
+	MAP_MODE_COUNT,
+};
+
+static struct { const char *name; unsigned mode; } g_map_mode_names[] = {
+	{"round-robin", MAP_ROUND_ROBIN},
+	{"numa-group", MAP_NUMA_GROUP},
+};
+
+static enum map_mode g_map_mode = -1;
+
+static int map_mode_show(struct seq_file *m, void *data) {
+	seq_printf(m, "%s\n", g_map_mode_names[g_map_mode].name);
+	return 0;
+}
+
+static int map_mode_open(struct inode *inode, struct file *file) {
+	return single_open(file, map_mode_show, NULL);
+}
+
+static ssize_t map_mode_write(struct file *file, const char __user *buffer, size_t count, loff_t *f_pos) {
+	int i;
+	char input[32] = {0};
+
+	if (count >= sizeof(input) || count <= 0)
+		return -EINVAL;
+
+	if (copy_from_user(input, buffer, count))
+		return -EFAULT;
+	
+	for (i = 0; i < MAP_MODE_COUNT; i++) {
+		const char *name = g_map_mode_names[i].name;
+		size_t len = strlen(name);
+		unsigned mode = g_map_mode_names[i].mode;
+
+		if (count >= len && strncmp(input, name, len) == 0) {
+			g_map_mode = mode;
+			return count;
+		}
+	}
+
+	return -EINVAL;
+}
+
+static const struct proc_ops map_mode_fops = {
+	.proc_open       = map_mode_open,
+	.proc_read       = seq_read,
+	.proc_lseek      = seq_lseek,
+	.proc_write      = map_mode_write,
+	.proc_release    = single_release,
+};
+
+static void map_mode_init(void) {
+	if (g_map_mode == -1) {
+		proc_create("blk_cpu_map_mode", 0666, NULL, &map_mode_fops);
+		g_map_mode = 0;
+	}
+}
+
 
 static int queue_index(struct blk_mq_queue_map *qmap,
 		       unsigned int nr_queues, const int q)
@@ -31,7 +98,26 @@ static int get_first_sibling(unsigned int cpu)
 	return cpu;
 }
 
-void blk_mq_map_queues(struct blk_mq_queue_map *qmap)
+static void blk_mq_map_queues_numa(struct blk_mq_queue_map *qmap)
+{
+        const struct cpumask *masks;
+        unsigned int queue, cpu;
+
+        masks = group_cpus_evenly(qmap->nr_queues);
+        if (!masks) {
+                for_each_possible_cpu(cpu)
+                        qmap->mq_map[cpu] = qmap->queue_offset;
+                return;
+        }
+
+        for (queue = 0; queue < qmap->nr_queues; queue++) {
+                for_each_cpu(cpu, &masks[queue])
+                        qmap->mq_map[cpu] = qmap->queue_offset + queue;
+        }
+        kfree(masks);
+}
+
+static void blk_mq_map_queues_round_robin(struct blk_mq_queue_map *qmap)
 {
 	unsigned int *map = qmap->mq_map;
 	unsigned int nr_queues = qmap->nr_queues;
@@ -69,6 +155,16 @@ void blk_mq_map_queues(struct blk_mq_queue_map *qmap)
 				map[cpu] = map[first_sibling];
 		}
 	}
+}
+
+void blk_mq_map_queues(struct blk_mq_queue_map *qmap)
+{
+	map_mode_init();
+
+	if (g_map_mode == MAP_ROUND_ROBIN)
+		blk_mq_map_queues_round_robin(qmap);
+	else
+		blk_mq_map_queues_numa(qmap);
 }
 EXPORT_SYMBOL_GPL(blk_mq_map_queues);
 

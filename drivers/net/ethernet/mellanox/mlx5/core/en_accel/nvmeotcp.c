@@ -622,6 +622,7 @@ mlx5e_nvmeotcp_queue_init(struct net_device *netdev,
 	int queue_id, err;
 	u32 channel_ix;
 
+	printk("XXX running on cpu %d , confi->io_cpu = %d\n", raw_smp_processor_id(), config->io_cpu);
 	channel_ix = mlx5e_get_channel_ix_from_io_cpu(&priv->channels.params,
 						      config->io_cpu);
 	sw_stats = &priv->nvmeotcp->sw_stats;

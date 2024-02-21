@@ -28,6 +28,49 @@
 #include "nvme.h"
 #include "fabrics.h"
 
+static atomic_t g_total, g_rx_cpu[256], g_tx_cpu[256], g_td_cpu[256];
+static void debug_cpu_write_stats(atomic_t *stats, size_t nbcpu, char *buf, size_t len)
+{
+	unsigned written = 0;
+	int remaining = len-1;
+	int i;
+
+	buf[len-1] = 0;
+	for (i = 0; i < num_online_cpus() && i < nbcpu; i++) {
+		unsigned v = atomic_read(&stats[i]);
+
+		if (v > 0) {
+			int r = snprintf(buf + written, remaining, "cpu%d=%u ", i, v);
+			if (r < 0 || r >= remaining) {
+				printk("XXX buf too small\n");
+				return;
+			}
+			written += r;
+			remaining -= r;
+		}
+	}
+	buf[len-1] = 0;
+}
+static void debug_cpu(void)
+{
+	unsigned count = atomic_inc_return(&g_total);
+	if (count % 64000 == 0) {
+		char buf[512];
+
+		debug_cpu_write_stats(g_rx_cpu, ARRAY_SIZE(g_rx_cpu), buf, sizeof(buf));
+		printk("XXX ddp setup    cpu: %s\n", buf);
+
+		debug_cpu_write_stats(g_tx_cpu, ARRAY_SIZE(g_rx_cpu), buf, sizeof(buf));
+		printk("XXX ddp teard    cpu: %s\n", buf);
+
+		debug_cpu_write_stats(g_td_cpu, ARRAY_SIZE(g_rx_cpu), buf, sizeof(buf));
+		printk("XXX ddp tearDone cpu: %s\n", buf);
+		memset(g_rx_cpu, 0, sizeof(g_rx_cpu));
+		memset(g_tx_cpu, 0, sizeof(g_rx_cpu));
+		memset(g_td_cpu, 0, sizeof(g_rx_cpu));
+	}
+}
+
 struct nvme_tcp_queue;
 
 /* Define the socket priority to use for connections were it is desirable
@@ -419,6 +462,7 @@ static void nvme_tcp_teardown_ddp(struct nvme_tcp_queue *queue,
 	struct net_device *netdev = queue->ctrl->ddp_netdev;
 	struct nvme_tcp_request *req = blk_mq_rq_to_pdu(rq);
 
+	//atomic_inc(&g_tx_cpu[raw_smp_processor_id()]);
 	ulp_ddp_teardown(netdev, queue->sock->sk, &req->ddp, rq);
 	sg_free_table_chained(&req->ddp.sg_table, SG_CHUNK_SIZE);
 }
@@ -428,6 +472,8 @@ static void nvme_tcp_ddp_teardown_done(void *ddp_ctx)
 	struct request *rq = ddp_ctx;
 	struct nvme_tcp_request *req = blk_mq_rq_to_pdu(rq);
 
+	//atomic_inc(&g_td_cpu[raw_smp_processor_id()]);
+	
 	if (!nvme_try_complete_req(rq, req->nvme_status, req->result))
 		nvme_complete_rq(rq);
 }
@@ -462,9 +508,12 @@ static void nvme_tcp_setup_ddp(struct nvme_tcp_queue *queue,
 		goto err;
 	}
 
+	//atomic_inc(&g_rx_cpu[raw_smp_processor_id()]);
+	//debug_cpu();
+	
 	/* if successful, sg table is freed in nvme_tcp_teardown_ddp() */
 	req->offloaded = true;
-
+	
 	return;
 err:
 	WARN_ONCE(ret, "ddp setup failed (queue 0x%x, cid 0x%x, ret=%d)",
@@ -486,6 +535,7 @@ static int nvme_tcp_offload_socket(struct nvme_tcp_queue *queue)
 		queue->data_digest ? NVME_TCP_DATA_DIGEST_ENABLE : 0;
 	config.nvmeotcp.queue_size = queue->ctrl->ctrl.sqsize + 1;
 	config.nvmeotcp.queue_id = nvme_tcp_queue_id(queue);
+	config.io_cpu = queue->io_cpu;
 
 	ret = ulp_ddp_sk_add(queue->ctrl->ddp_netdev,
 			     queue->sock->sk,

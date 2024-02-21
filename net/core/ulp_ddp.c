@@ -18,7 +18,6 @@ int ulp_ddp_sk_add(struct net_device *netdev,
 	/* put in ulp_ddp_sk_del() */
 	dev_hold(netdev);
 
-	config->io_cpu = sk->sk_incoming_cpu;
 	ret = netdev->netdev_ops->ulp_ddp_ops->sk_add(netdev, sk, config);
 	if (ret) {
 		dev_put(netdev);

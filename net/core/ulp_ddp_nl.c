@@ -285,7 +285,9 @@ int ulp_ddp_nl_caps_set_doit(struct sk_buff *skb, struct genl_info *info)
 	wanted = nla_get_uint(info->attrs[ULP_DDP_A_CAPS_WANTED]);
 	wanted_mask = nla_get_uint(info->attrs[ULP_DDP_A_CAPS_WANTED_MASK]);
 
+	rtnl_lock();
 	ret = ulp_ddp_apply_bits(ctx, &wanted, &wanted_mask, info, &notify);
+	rtnl_unlock();
 	if (ret)
 		goto err_rsp;
 
