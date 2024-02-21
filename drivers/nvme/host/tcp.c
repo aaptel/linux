@@ -512,6 +512,7 @@ static int nvme_tcp_offload_socket(struct nvme_tcp_queue *queue)
 		queue->data_digest ? NVME_TCP_DATA_DIGEST_ENABLE : 0;
 	config.nvmeotcp.queue_size = queue->ctrl->ctrl.sqsize + 1;
 	config.nvmeotcp.queue_id = nvme_tcp_queue_id(queue);
+	config.io_cpu = queue->io_cpu;
 
 	ret = ulp_ddp_sk_add(queue->ctrl->ddp_netdev,
 			     queue->sock->sk,
