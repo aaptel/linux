@@ -437,6 +437,20 @@ static inline void nvme_tcp_ddp_ddgst_update(struct nvme_tcp_queue *queue,
 		queue->ddp_ddgst_valid = skb_is_ulp_crc(skb);
 }
 
+static int nvme_tcp_ddp_alloc_sgl(struct nvme_tcp_request *req, struct request *rq)
+{
+	int ret;
+
+	req->ddp.sg_table.sgl = req->ddp.first_sgl;
+	ret = sg_alloc_table_chained(&req->ddp.sg_table,
+				     blk_rq_nr_phys_segments(rq),
+				     req->ddp.sg_table.sgl, SG_CHUNK_SIZE);
+	if (ret)
+		return -ENOMEM;
+	req->ddp.nents = blk_rq_map_sg(rq->q, rq, req->ddp.sg_table.sgl);
+	return 0;
+}
+
 static void nvme_tcp_ddp_ddgst_recalc(struct ahash_request *hash,
 				      struct request *rq,
 				      __le32 *ddgst)
@@ -444,9 +458,25 @@ static void nvme_tcp_ddp_ddgst_recalc(struct ahash_request *hash,
 	struct nvme_tcp_request *req;
 
 	req = blk_mq_rq_to_pdu(rq);
+	if (!req->offloaded) {
+		/* if we have DDGST_RX offload but DDP was skipped
+		 * because it's under min IO threshold then the
+		 * request won't have an SGL, so we need to make it
+		 * here
+		 */
+		if (nvme_tcp_ddp_alloc_sgl(req, rq))
+			return;
+	}
+
 	ahash_request_set_crypt(hash, req->ddp.sg_table.sgl, (u8 *)ddgst,
 				req->data_len);
 	crypto_ahash_digest(hash);
+	if (!req->offloaded) {
+		/* without DDP, ddp_teardown() won't be called, so
+		 * free the table here
+		 */
+		sg_free_table_chained(&req->ddp.sg_table, SG_CHUNK_SIZE);
+	}
 }
 
 static bool nvme_tcp_resync_request(struct sock *sk, u32 seq, u32 flags);
@@ -494,13 +524,9 @@ static void nvme_tcp_setup_ddp(struct nvme_tcp_queue *queue,
 	 */
 
 	req->ddp.command_id = nvme_cid(rq);
-	req->ddp.sg_table.sgl = req->ddp.first_sgl;
-	ret = sg_alloc_table_chained(&req->ddp.sg_table,
-				     blk_rq_nr_phys_segments(rq),
-				     req->ddp.sg_table.sgl, SG_CHUNK_SIZE);
+	ret = nvme_tcp_ddp_alloc_sgl(req, rq);
 	if (ret)
 		goto err;
-	req->ddp.nents = blk_rq_map_sg(rq->q, rq, req->ddp.sg_table.sgl);
 
 	ret = ulp_ddp_setup(netdev, queue->sock->sk, &req->ddp);
 	if (ret) {
