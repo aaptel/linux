@@ -8390,12 +8390,17 @@ struct net_device *get_netdev_for_sock(struct sock *sk,
 {
 	struct dst_entry *dst = sk_dst_get(sk);
 	struct net_device *dev, *lower;
+	struct list_head *iter;
 
 	if (unlikely(!dst))
 		return NULL;
 	dev = dst->dev;
-	while ((lower = netdev_sk_get_lower_dev(dev, sk)))
-		dev = lower;
+	netdev_for_each_lower_dev(dev, lower, iter) {
+		if (!netdev_has_any_lower_dev(lower)) {
+			dev = lower;
+			break;
+		}
+	}
 	netdev_hold(dev, tracker, gfp);
 	dst_release(dst);
 	return dev;
