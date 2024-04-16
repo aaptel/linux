@@ -44,7 +44,7 @@ bool ulp_ddp_is_cap_active(struct net_device *netdev, int cap_bit_nr)
 {
 	struct ulp_ddp_dev_caps caps;
 
-	if (!netdev->netdev_ops->ulp_ddp_ops->get_caps)
+	if (!netdev->netdev_ops->ulp_ddp_ops)
 		return false;
 	netdev->netdev_ops->ulp_ddp_ops->get_caps(netdev, &caps);
 	return test_bit(cap_bit_nr, caps.active);
