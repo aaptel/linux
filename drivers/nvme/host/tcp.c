@@ -380,8 +380,10 @@ nvme_tcp_get_ddp_netdev_with_limits(struct nvme_tcp_ctrl *ctrl)
 	if (!ddp_offload)
 		return NULL;
 
+	rtnl_lock();
 	/* netdev ref is put in nvme_tcp_stop_admin_queue() */
 	netdev = get_netdev_for_sock(ctrl->queues[0].sock->sk, &ctrl->netdev_tracker, GFP_KERNEL);
+	rtnl_unlock();
 	if (!netdev) {
 		dev_dbg(ctrl->ctrl.device, "netdev not found\n");
 		return NULL;
