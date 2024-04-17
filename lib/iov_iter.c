@@ -68,7 +68,7 @@ size_t memcpy_to_iter(void *iter_to, size_t progress,
 	 * IOVs such that they point to this data.
 	 * Thus, when the src == dst we skip the memcpy.
 	 */
-	if (iter_to != from + progress)
+	if (!(IS_ENABLED(CONFIG_ULP_DDP) && iter_to == from + progress))
 		memcpy(iter_to, from + progress, len);
 	return 0;
 }
