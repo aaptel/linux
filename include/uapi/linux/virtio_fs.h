@@ -14,7 +14,15 @@ struct virtio_fs_config {
 
 	/* Number of request queues */
 	__le32 num_request_queues;
+
+	/* Minimum number of bytes required for each buffer in the notification queue */
+	__le32 notify_buf_size;
 } __attribute__((packed));
+
+/* Feature bits */
+enum {
+	VIRTIO_FS_F_NOTIFICATION
+};
 
 /* For the id field in virtio_pci_shm_cap */
 #define VIRTIO_FS_SHMCAP_ID_CACHE 0
